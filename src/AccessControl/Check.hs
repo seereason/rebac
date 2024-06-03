@@ -10,6 +10,7 @@ import           Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Data (Data)
 import Data.Either (partitionEithers)
+import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Set (Set)
@@ -18,10 +19,13 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable (Typeable)
 import Data.Void (Void)
+import Debug.Trace (trace)
 import GHC.Generics
 import Text.PrettyPrint.HughesPJ (Doc, (<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 
+-- debugTrace = trace
+debugTrace = const id
 
 data RelPerm = RelPerm
   { relMap  :: Map Text (NonEmpty TypeReference)
@@ -99,22 +103,36 @@ check (RelationState rsTuples rsDefMap) resource@(Object (ObjectType resourceTyp
            (Just (RelPerm rm pm)) ->
              -- find the requested permission
              case Map.lookup perm pm of
+               -- fixme: perm could also be a relation not actually a permission
                Nothing -> NotAllowed $ "permission " <> perm <> " not defined for resource " <> resourceType
-               (Just expr) -> checkExpr  relationTuples expr rm
+               (Just expr) -> checkExpr relationTuples expr rm
   where
-    checkExpr :: [ RelationTuple ] -> PermissionExpression -> Map Text (NonEmpty TypeReference) -> Access
+    checkExpr :: [ RelationTuple ]
+              -> PermissionExpression
+              -> Map Text (NonEmpty TypeReference)
+              -> Access
+    -- handle a simple reference
     checkExpr relationTuples (Ref tr@(TypeReference (Resource relName Nothing) Nothing)) rm =
       case Map.lookup relName rm of
         Nothing  -> NotAllowed $ "permission  " <> perm <> " refers to a relation " <> relName <> " which can not be found."
         (Just subjectTypes) ->
-          if (TypeReference (Resource "user" Nothing) Nothing) `elem` subjectTypes
-          then if (RelationTuple resource (Relation relName) subject) `elem` relationTuples
+          debugTrace ("\nSubjectTypes -> " ++ show subjectTypes ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ show (ppTypeReference tr) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
+          let (direct, others) = partition (hasSubjectType (ObjectType subjectType)) relationTuples
+          in if (RelationTuple resource (Relation relName) subject) `elem` direct
                then Allowed
-               else NotAllowed (T.pack $ show subjectTypes)
-          else NotAllowed ((T.pack $ show $ ppObject subject) <> " does not match " <> (T.pack $ show subjectTypes))
-
-
---             error ("\n" ++ (show $ ppRelationTuples r) ++ "\n\n" ++ (show $ ppRelPerm relPerms))
+               else NotAllowed $ T.pack $ show $ ppRelationTuples others
+    checkExpr relationTuples (Union l r) rm =
+      case checkExpr relationTuples l rm of
+        Allowed -> Allowed
+        NotAllowed nal ->
+          case checkExpr relationTuples r rm of
+            Allowed -> Allowed
+            (NotAllowed nar) -> NotAllowed ("Union - left - " <> nal <> ", Union - right - " <> nar)
+    checkExpr relationTuples (Arrow (Relation arrowRel) permOrRel) rm =
+      case Map.lookup arrowRel rm of
+        Nothing  -> NotAllowed $ "permission  " <> perm <> " refers to a relation " <> arrowRel <> " which can not be found."
+        (Just subjectTypes) ->
+          error ("\nSubjectTypes -> " ++ show subjectTypes ++ "\n" ++ show arrowRel)
 
 -- * Permission Tree
 
@@ -156,42 +174,47 @@ expandPermissionTree rs resource relOrPerm =
 
 -- * Example
 
+-- https://authzed.com/blog/check-it-out
+
 schema1 :: Schema
 schema1 =
   [schema|
-definition user {}
+    definition user {}
 
-definition organization {
-    relation admin: user
+    definition organization {
+        relation admin: user
 
-    permission can_admin = admin
-}
+        permission can_admin = admin
+    }
 
-definition document {
-    relation org: organization
+    definition document {
+        relation org: organization
 
-    relation owner: user
-    relation reader: user
+        relation owner: user
+        relation reader: user
 
-    permission view = reader + owner
-    permission edit = owner
-}
+        permission edit = owner
+        permission view = reader + owner + org->can_admin
 
+    }
 |]
 
 rels1 :: [RelationTuple]
 rels1 =
   [rels|
-document:somedocument#reader@user:sean                 # Sean is a reader on somedocument
-document:somedocument#reader@user:fred                 # Fred is a reader on somedocument
-document:somedocument#owner@user:jill                  # Jill is the owner of somedocument
-organization:theorg#admin@user:hannah                  # Hannah is the admin of the organization
-document:somedocument#org@organization:theorg          # `theorg` is the organization for the document
-|]
+    document:somedocument#reader@user:sean                 # Sean is a reader on somedocument
+    document:somedocument#reader@user:fred                 # Fred is a reader on somedocument
+    document:somedocument#owner@user:jill                  # Jill is the owner of somedocument
+    organization:theorg#admin@user:hannah                  # Hannah is the admin of the organization
+    document:somedocument#org@organization:theorg          # `theorg` is the organization for the document
+  |]
 
+-- some resources
 
 somedocument :: Object
 somedocument = Object (ObjectType "document") (ObjectId "somedocument")
+
+-- some users
 
 sean :: Object
 sean = Object (ObjectType "user") (ObjectId "sean")
@@ -202,6 +225,25 @@ fred = Object (ObjectType "user") (ObjectId "fred")
 jill :: Object
 jill = Object (ObjectType "user") (ObjectId "jill")
 
+bob :: Object
+bob = [object| user:bob |]
+
+-- some relation names
+
+edit = "edit"
+view = "view"
+
 rs = mkRelationState schema1 rels1
-t1 = check rs  somedocument "edit" jill
+t1 =
+  do print $ (ppObject somedocument, edit, ppObject jill)
+     print $ check rs somedocument edit jill
+     putStrLn "-----------------------------------------------------"
+     print $ (somedocument, edit, sean)
+     print $ check rs somedocument edit sean
+     putStrLn "-----------------------------------------------------"
+     print $ (somedocument, view, sean)
+     print $ check rs somedocument view sean
+     putStrLn "-----------------------------------------------------"
+     print $ (somedocument, view, bob)
+     print $ check rs somedocument view bob
 

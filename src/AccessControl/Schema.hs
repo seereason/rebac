@@ -1,9 +1,12 @@
 {-# language DeriveDataTypeable #-}
 {-# language DeriveGeneric #-}
 {-# language OverloadedStrings #-}
+{-# language QuasiQuotes, TemplateHaskell, DeriveLift #-}
+{-# language StandaloneDeriving #-}
 module AccessControl.Schema where
 
 import Data.Data (Data)
+import Data.List (intersperse)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Text (Text)
@@ -11,8 +14,14 @@ import qualified Data.Text as T
 import Data.Typeable (Typeable)
 import Data.Void (Void)
 import GHC.Generics
+import Language.Haskell.TH
+import Language.Haskell.TH.Quote
+import Language.Haskell.TH.Syntax
+import Language.Haskell.TH.Lib (tupleT)
+
 import Text.Megaparsec
 import Text.Megaparsec.Char
+import Text.Megaparsec.Error
 import Text.PrettyPrint.HughesPJ ((<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Text.Megaparsec.Char.Lexer as L -- (1)
@@ -30,62 +39,113 @@ data RelationTuple = RelationTuple
   }
 -}
 
+instance Lift Text where
+  lift t = lift (T.unpack t)
+
+-- instance (Lift a) => Lift (NonEmpty a) where
+--  lift _ = undefined
+
+deriving instance (Lift a) => Lift (NonEmpty a)
+
+ppText :: Text -> PP.Doc
+ppText t = PP.text (T.unpack t)
+
+-- a name could be an object type, object id, relation name, etc.
+-- pName :: Parser Text
+-- pName = T.pack <$> some alphaNumChar
+
+-- in something like 'group:123#member', this is just the 'member' part.
+-- fixme: this should use a smart constructor to ensure that the `Text` value only contains valid symbols.
+newtype Relation = Relation { unRelation :: Text }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+ppRelation :: Relation -> PP.Doc
+ppRelation (Relation r) = ppText r
+
+pRelation :: Parser Relation
+pRelation = Relation <$> pName
+
+newtype Permission = Permission { unPermission :: Text }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+ppPermission :: Permission -> PP.Doc
+ppPermission (Permission r) = ppText r
+
+pPermission :: Parser Permission
+pPermission = Permission <$> pName
+
+ppPermissionRelation :: Either Permission Relation -> PP.Doc
+ppPermissionRelation (Left p)  = ppPermission p
+ppPermisisonRelation (Right r) = ppRelation r
+
 data Comment
   = SingleLineComment Text
   | MultiLineComment [ Text ]
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-newtype ObjectType = ObjectType { unObjectType :: Text } deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+newtype ObjectType = ObjectType { unObjectType :: Text }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+ppObjectType :: ObjectType -> PP.Doc
+ppObjectType (ObjectType ty) = ppText ty
+
+pObjectType :: Parser ObjectType
+pObjectType = ObjectType <$> pName
 
 data ObjectRelation = ObjectRelation
   { orName :: Text
   , orObjectTypes :: NonEmpty TypeReference
   }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 data ResourceId
   = ResourceId Text
   | Wildcard
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 data Resource = Resource
   { resourceType :: Text
   , resourceId   :: Maybe ResourceId
   }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 data Subject = Subject
   { subjectType :: Text
   , subjectId   :: Maybe Text
   }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 data TypeReference = TypeReference
   { objectResource :: Resource
   , objectRelation :: Maybe Text
-  }  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  }  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 
 data PermissionExpression
   = Union        PermissionExpression PermissionExpression
   | Intersection PermissionExpression PermissionExpression
   | Exclusion    PermissionExpression PermissionExpression
-  | Arrow        Text Text
+  | Arrow        Relation Text
   | Ref          TypeReference
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 data ObjectPermission = ObjectPermission
   { opName :: Text
   , opExpr :: PermissionExpression
   }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 -- does not preserve comments or whitespace
 data Definition = Definition
   { defName  :: Text
   , defDecls :: [ Either ObjectRelation ObjectPermission ]
   }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+data Schema = Schema
+  { definitions :: [ Definition ]
+  }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 -- * Printer
 
@@ -102,8 +162,11 @@ ppTypeReference (TypeReference r mRel) =
                      (Just rel) -> PP.char '#' <> PP.text (T.unpack rel))
 
 ppPermissionExpression :: PermissionExpression -> PP.Doc
-ppPermissionExpression (Ref tr)    = ppTypeReference tr
-ppPermissionExpression (Union a b) = ppPermissionExpression a <+> PP.char '+' <+> ppPermissionExpression b
+ppPermissionExpression (Union a b)        = ppPermissionExpression a <+> PP.char '+' <+> ppPermissionExpression b
+ppPermissionExpression (Intersection a b) = ppPermissionExpression a <+> PP.char '&' <+> ppPermissionExpression b
+ppPermissionExpression (Exclusion a b)    = ppPermissionExpression a <+> PP.char '-' <+> ppPermissionExpression b
+ppPermissionExpression (Arrow rel pr)     = ppRelation rel <> PP.text "->" <> ppText pr
+ppPermissionExpression (Ref tr)           = ppTypeReference tr
 
 ppObjectPermission :: ObjectPermission -> PP.Doc
 ppObjectPermission (ObjectPermission nm exp) =
@@ -120,21 +183,29 @@ ppDef :: Either ObjectRelation ObjectPermission -> PP.Doc
 ppDef (Left or) = ppObjectRelation or
 ppDef (Right op) = ppObjectPermission op
 
-
 ppDefinition :: Definition -> PP.Doc
 ppDefinition (Definition nm []) = (PP.text "definition" <+> (PP.text (T.unpack nm)) <+> PP.text "{}")
 ppDefinition (Definition nm decls) =
   (PP.text "definition" <+> (PP.text (T.unpack nm)) <+> PP.char '{') $$ (PP.nest 4 $ PP.vcat (map ppDef decls)) $$ PP.char '}'
 
+ppSchema :: Schema -> PP.Doc
+ppSchema (Schema defs) =
+  PP.vcat $ intersperse (PP.text "") (map ppDefinition defs)
+
 -- * Parser
 
 type Parser = Parsec Void Text
 
-
 sc :: Parser ()
 sc = L.space
   hspace1
-  (L.skipLineComment "//")
+  (L.skipLineComment "#")
+  (L.skipBlockComment "/*" "*/")
+
+scnl :: Parser ()
+scnl = L.space
+  space1
+  (L.skipLineComment "#")
   (L.skipBlockComment "/*" "*/")
 
 lexeme :: Parser a -> Parser a
@@ -143,9 +214,9 @@ lexeme = L.lexeme sc
 symbol :: Text -> Parser Text
 symbol = L.symbol sc
 
-  -- fixme: how are characters escaped?
+-- fixme: a more strict parser might only allow [a-z][a-z0-9_]{1,62}[a-z0-9]
 pName :: Parser Text
-pName = T.pack <$> some alphaNumChar
+pName = T.pack <$> some (alphaNumChar <|> char '_')
 
 lcurlyBrace :: Parser Char
 lcurlyBrace = char '{'
@@ -220,14 +291,23 @@ test_pObjectRelation =
 -- fixme: add support for parens
 pPermissionExpression :: Parser PermissionExpression
 pPermissionExpression =
-  do a <- pTypeReference
+  do let pArrow = try $
+           do rel <- pRelation
+              string "->"
+              pr <- pName
+              pure (Arrow rel pr)
+     a <- pArrow <|> (Ref <$> pTypeReference)
      mop <- optional $ satisfy (\c -> c `elem` ("+&-" :: [Char]))
      case mop of
-       Nothing -> pure (Ref a)
-       (Just '+') ->
+       Nothing -> pure a
+       (Just op) ->
          do sc
             b <- pPermissionExpression
-            pure $ Union (Ref a) b
+            case op of
+              '+' -> pure $ Union        a b
+              '&' -> pure $ Intersection a b
+              '-' -> pure $ Exclusion    a b
+              _   -> error "this is not my beautiful house"
 
 test_pPermissionExpression =
   do parseTest pPermissionExpression "writer"
@@ -249,8 +329,8 @@ pDefinition =
   do try (sc *> symbol "definition")
      n <- lexeme pName
      lcurlyBrace
-     defs <- pDef `sepBy` eol
-     rcurlyBrace
+     scnl
+     defs <- manyTill (pDef <* scnl)  rcurlyBrace
      pure (Definition n defs)
 
 test_pDefinition :: IO ()
@@ -259,4 +339,32 @@ test_pDefinition =
      parseTest pDefinition $ "definition user {relation writer: user\nrelation reader: user}"
      parseTest pDefinition $ "definition user {relation writer: user\nrelation reader: user\n permission edit = writer}"
 
+pSchema :: Parser Schema
+pSchema =
+  do scnl
+     defs <- many (pDefinition <* scnl)
+     pure $ Schema defs
 
+test_pSchema :: IO ()
+test_pSchema =
+  do let res = runParser pSchema "" (T.unlines [ "\ndefinition user {}"
+                                               , "definition user {relation writer: user\nrelation reader: user\n}"
+                                               , "definition user {relation writer: user\nrelation reader: user\n permission edit = writer\n permission view = writer + reader }\n\n"
+                                               ])
+     case res of
+       (Right s) -> print $ ppSchema s
+       (Left e) -> putStrLn $ errorBundlePretty e
+
+schemaExpr :: String -> Q Exp
+schemaExpr s =
+  case runParser pSchema s (T.pack s) of
+    (Left e) -> error (errorBundlePretty e)
+    (Right p) -> lift p
+
+schema :: QuasiQuoter
+schema = QuasiQuoter
+  { quoteExp  = schemaExpr
+  , quotePat  = error "schema does not yet define an pattern quoter"
+  , quoteType = error "schema does not yet define an type quoter"
+  , quoteDec  = error "schema does not yet define a declaration quoter"
+  }
