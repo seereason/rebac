@@ -6,6 +6,7 @@
 module AccessControl.Schema where
 
 import Data.Data (Data)
+import Data.SafeCopy (SafeCopy)
 import Data.List (intersperse)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -59,6 +60,8 @@ ppText t = PP.text (T.unpack t)
 newtype Relation = Relation { unRelation :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy Relation
+
 ppRelation :: Relation -> PP.Doc
 ppRelation (Relation r) = ppText r
 
@@ -67,6 +70,8 @@ pRelation = Relation <$> pName
 
 newtype Permission = Permission { unPermission :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy Permission
 
 ppPermission :: Permission -> PP.Doc
 ppPermission (Permission r) = ppText r
@@ -86,6 +91,8 @@ data Comment
 newtype ObjectType = ObjectType { unObjectType :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy ObjectType
+
 ppObjectType :: ObjectType -> PP.Doc
 ppObjectType (ObjectType ty) = ppText ty
 
@@ -98,10 +105,14 @@ data ObjectRelation = ObjectRelation
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy ObjectRelation
+
 data ResourceId
   = ResourceId Text
   | Wildcard
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy ResourceId
 
 data Resource = Resource
   { resourceType :: Text
@@ -109,17 +120,22 @@ data Resource = Resource
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy Resource
+
 data Subject = Subject
   { subjectType :: Text
   , subjectId   :: Maybe Text
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy Subject
+
 data TypeReference = TypeReference
   { objectResource :: Resource
   , objectRelation :: Maybe Text
   }  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy TypeReference
 
 data PermissionExpression
   = Union        PermissionExpression PermissionExpression
@@ -129,11 +145,15 @@ data PermissionExpression
   | Ref          TypeReference
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy PermissionExpression
+
 data ObjectPermission = ObjectPermission
   { opName :: Text
   , opExpr :: PermissionExpression
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy ObjectPermission
 
 -- does not preserve comments or whitespace
 data Definition = Definition
@@ -142,10 +162,14 @@ data Definition = Definition
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy Definition
+
 data Schema = Schema
   { definitions :: [ Definition ]
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy Schema
 
 -- * Printer
 

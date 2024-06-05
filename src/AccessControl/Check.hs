@@ -13,6 +13,7 @@ import Data.Either (partitionEithers)
 import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.SafeCopy (SafeCopy)
 import           Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
@@ -52,17 +53,23 @@ ppRelPerm (RelPerm r p) =
 data RelationState = RelationState
   { rsTuples      :: [RelationTuple]
   , rsDefMap      :: Map Text RelPerm
+  , rsSchema      :: Schema
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
 
 mkRelationState :: Schema -> [RelationTuple] -> RelationState
-mkRelationState (Schema defs) tuples =
+mkRelationState s@(Schema defs) tuples =
   RelationState { rsTuples      = tuples
-                , rsDefMap      = mkDefMap
+                , rsDefMap      = mkDefMap defs
+                , rsSchema      = s
                 }
-  where
-    mkDefMap = Map.fromList $ map mkDefMapItem defs
-    mkDefMapItem (Definition nm decls) =
+
+mkDefMap
+  :: [Definition]
+  -> Map Text RelPerm
+mkDefMap defs = Map.fromList $ map mkDefMapItem defs
+ where
+   mkDefMapItem (Definition nm decls) =
       let (rels, perms) = partitionEithers decls
           relMap  = Map.fromList $ map (\(ObjectRelation nm ot) -> (nm, ot)) rels
           permMap = Map.fromList $ map (\(ObjectPermission nm ex) -> (nm, ex)) perms
@@ -82,6 +89,8 @@ data Access
   | NotAllowed [Text]
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
 
+instance SafeCopy Access
+
 instance Semigroup Access where
   Allowed <> _       = Allowed
   _       <> Allowed = Allowed
@@ -95,12 +104,12 @@ As an alternative implementation -- could we have a lazy function which expands 
 
 The expansion function seems useful for diagnostic purposes.
 -}
-check :: RelationState
+check' :: RelationState
       -> Object -- ^ resource
       -> Text   -- ^ permission
       -> Object -- ^ subject
       -> Access
-check rs@(RelationState rsTuples rsDefMap) resource@(Object (ObjectType resourceTy) (ObjectId resourceId)) perm subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
+check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resourceTy) (ObjectId resourceId)) perm subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
   case filter (\(RelationTuple resource' _ _) -> resource == resource') rsTuples of
@@ -147,7 +156,7 @@ check rs@(RelationState rsTuples rsDefMap) resource@(Object (ObjectType resource
               let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ resourceType $ objectResource st)
               in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
                  -- fixme: this check could be done in parallel
-                 mconcat $ map (\subj -> check rs subj permOrRel subject) subjs
+                 mconcat $ map (\subj -> check' rs subj permOrRel subject) subjs
 
 lookupSubjects :: [RelationTuple] -> Object -> Relation -> [ Object ]
 lookupSubjects tuples res rel =
@@ -249,6 +258,12 @@ fred = Object (ObjectType "user") (ObjectId "fred")
 jill :: Object
 jill = Object (ObjectType "user") (ObjectId "jill")
 
+reader :: Relation
+reader = Relation "reader"
+
+owner :: Relation
+owner = Relation "owner"
+
 bob :: Object
 bob = [object| user:bob |]
 
@@ -264,16 +279,16 @@ rs = mkRelationState schema1 rels1
 t1 =
   do putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject bob)
-     print $ check rs somedocument view bob
+     print $ check' rs somedocument view bob
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject hannah)
-     print $ check rs somedocument view hannah
+     print $ check' rs somedocument view hannah
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, edit, ppObject jill)
-     print $ check rs somedocument edit jill
+     print $ check' rs somedocument edit jill
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, edit, ppObject sean)
-     print $ check rs somedocument edit sean
+     print $ check' rs somedocument edit sean
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject sean)
-     print $ check rs somedocument view sean
+     print $ check' rs somedocument view sean

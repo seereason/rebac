@@ -8,6 +8,7 @@ import AccessControl.Schema (Relation(..), pName, pRelation, ppRelation, pObject
 import Data.Data (Data)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.SafeCopy (SafeCopy)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable (Typeable)
@@ -39,6 +40,8 @@ newtype ObjectType = ObjectType { unObjectType :: Text }
 newtype ObjectId = ObjectId { unObjectId :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy ObjectId
+
 ppObjectId :: ObjectId -> Doc
 ppObjectId (ObjectId i) = ppText i
 
@@ -50,6 +53,8 @@ data Object = Object
   , objectId   :: ObjectId
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy Object
 
 ppObject :: Object -> Doc
 ppObject (Object ot oi) =
@@ -68,6 +73,8 @@ data RelationTuple = RelationTuple
   , subject  :: Object
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy RelationTuple
 
 ppRelationTuple :: RelationTuple -> Doc
 ppRelationTuple (RelationTuple res rel subj) =
