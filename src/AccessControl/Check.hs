@@ -79,8 +79,16 @@ schemaTopMap (Schema defs) =
   -}
 data Access
   = Allowed
-  | NotAllowed Text
+  | NotAllowed [Text]
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+
+instance Semigroup Access where
+  Allowed <> _       = Allowed
+  _       <> Allowed = Allowed
+  (NotAllowed l) <> (NotAllowed r) = NotAllowed (l ++ r)
+
+instance Monoid Access where
+  mempty = NotAllowed []
 
 {-
 As an alternative implementation -- could we have a lazy function which expands the permission tree, and then a second function which just searches that tree.
@@ -92,19 +100,20 @@ check :: RelationState
       -> Text   -- ^ permission
       -> Object -- ^ subject
       -> Access
-check (RelationState rsTuples rsDefMap) resource@(Object (ObjectType resourceType) (ObjectId resourceId)) perm subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
+check rs@(RelationState rsTuples rsDefMap) resource@(Object (ObjectType resourceTy) (ObjectId resourceId)) perm subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
+  debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
   case filter (\(RelationTuple resource' _ _) -> resource == resource') rsTuples of
-    [] -> NotAllowed "no tuples for resource located"
+    [] -> NotAllowed [ "no tuples for resource located" ]
     relationTuples ->
       -- find the object definition that is relevant to the 'resourceType'
-      case Map.lookup resourceType rsDefMap of
-           Nothing -> NotAllowed $ "object not found in definitions - " <> resourceType
+      case Map.lookup resourceTy rsDefMap of
+           Nothing -> NotAllowed [ "object not found in definitions - " <> resourceTy ]
            (Just (RelPerm rm pm)) ->
              -- find the requested permission
              case Map.lookup perm pm of
                -- fixme: perm could also be a relation not actually a permission
-               Nothing -> NotAllowed $ "permission " <> perm <> " not defined for resource " <> resourceType
+               Nothing -> NotAllowed [ "permission " <> perm <> " not defined for resource " <> resourceTy ]
                (Just expr) -> checkExpr relationTuples expr rm
   where
     checkExpr :: [ RelationTuple ]
@@ -114,25 +123,40 @@ check (RelationState rsTuples rsDefMap) resource@(Object (ObjectType resourceTyp
     -- handle a simple reference
     checkExpr relationTuples (Ref tr@(TypeReference (Resource relName Nothing) Nothing)) rm =
       case Map.lookup relName rm of
-        Nothing  -> NotAllowed $ "permission  " <> perm <> " refers to a relation " <> relName <> " which can not be found."
+        Nothing  -> NotAllowed [ "permission  " <> perm <> " refers to a relation " <> relName <> " which can not be found." ]
         (Just subjectTypes) ->
-          debugTrace ("\nSubjectTypes -> " ++ show subjectTypes ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ show (ppTypeReference tr) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
+          debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ show (ppTypeReference tr) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
           let (direct, others) = partition (hasSubjectType (ObjectType subjectType)) relationTuples
           in if (RelationTuple resource (Relation relName) subject) `elem` direct
                then Allowed
-               else NotAllowed $ T.pack $ show $ ppRelationTuples others
+               else NotAllowed [ T.pack $ show $ ppRelationTuples others ]
     checkExpr relationTuples (Union l r) rm =
       case checkExpr relationTuples l rm of
         Allowed -> Allowed
         NotAllowed nal ->
           case checkExpr relationTuples r rm of
             Allowed -> Allowed
-            (NotAllowed nar) -> NotAllowed ("Union - left - " <> nal <> ", Union - right - " <> nar)
+            (NotAllowed nar) -> NotAllowed $ (map  (\s -> "Union - left - " <> s) nal) ++ (map (\s -> "Union - right - " <> s) nar)
     checkExpr relationTuples (Arrow (Relation arrowRel) permOrRel) rm =
       case Map.lookup arrowRel rm of
-        Nothing  -> NotAllowed $ "permission  " <> perm <> " refers to a relation " <> arrowRel <> " which can not be found."
+        Nothing  -> NotAllowed [ "permission  " <> perm <> " refers to a relation " <> arrowRel <> " which can not be found." ]
         (Just subjectTypes) ->
-          error ("\nSubjectTypes -> " ++ show subjectTypes ++ "\n" ++ show arrowRel)
+          debugTrace ("checkExpr Arrow - \nSubjectTypes -> " ++ show ({- NonEmpty.map ppTypeReference -} subjectTypes) ++ "\n" ++ show arrowRel) $
+          case subjectTypes of
+            (st  :| sts) ->
+              let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ resourceType $ objectResource st)
+              in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
+                 -- fixme: this check could be done in parallel
+                 mconcat $ map (\subj -> check rs subj permOrRel subject) subjs
+
+lookupSubjects :: [RelationTuple] -> Object -> Relation -> [ Object ]
+lookupSubjects tuples res rel =
+  [ subj | (RelationTuple res' rel' subj) <- tuples, res == res', rel == rel' ]
+
+lookupSubjectsWithType :: [RelationTuple] -> Object -> Relation -> ObjectType -> [ Object ]
+lookupSubjectsWithType tuples res rel objectType =
+  [ subj | (RelationTuple res' rel' subj@(Object objectType' _)) <- tuples, res == res', rel == rel', objectType == objectType' ]
+
 
 -- * Permission Tree
 
@@ -228,6 +252,9 @@ jill = Object (ObjectType "user") (ObjectId "jill")
 bob :: Object
 bob = [object| user:bob |]
 
+hannah :: Object
+hannah = [object| user:hannah |]
+
 -- some relation names
 
 edit = "edit"
@@ -235,15 +262,18 @@ view = "view"
 
 rs = mkRelationState schema1 rels1
 t1 =
-  do print $ (ppObject somedocument, edit, ppObject jill)
+  do putStrLn "-----------------------------------------------------"
+     print $ (ppObject somedocument, view, ppObject bob)
+     print $ check rs somedocument view bob
+     putStrLn "-----------------------------------------------------"
+     print $ (ppObject somedocument, view, ppObject hannah)
+     print $ check rs somedocument view hannah
+     putStrLn "-----------------------------------------------------"
+     print $ (ppObject somedocument, edit, ppObject jill)
      print $ check rs somedocument edit jill
      putStrLn "-----------------------------------------------------"
-     print $ (somedocument, edit, sean)
+     print $ (ppObject somedocument, edit, ppObject sean)
      print $ check rs somedocument edit sean
      putStrLn "-----------------------------------------------------"
-     print $ (somedocument, view, sean)
+     print $ (ppObject somedocument, view, ppObject sean)
      print $ check rs somedocument view sean
-     putStrLn "-----------------------------------------------------"
-     print $ (somedocument, view, bob)
-     print $ check rs somedocument view bob
-
