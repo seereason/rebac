@@ -75,15 +75,6 @@ mkDefMap defs = Map.fromList $ map mkDefMapItem defs
           permMap = Map.fromList $ map (\(ObjectPermission nm ex) -> (nm, ex)) perms
       in (nm, RelPerm relMap permMap)
 
-{-
-  let (rels, perms) = partitionEithers defs
-
--}
-{-
-defs :: Schema -> Map Text Definition
-schemaTopMap (Schema defs) =
-  Map.fromList $ map (\d -> (defName d, defDecls
-  -}
 data Access
   = Allowed
   | NotAllowed [Text]
@@ -99,21 +90,25 @@ instance Semigroup Access where
 instance Monoid Access where
   mempty = NotAllowed []
 
+isAllowed :: Access -> Bool
+isAllowed Allowed = True
+isAllowed _       = False
+
 {-
 As an alternative implementation -- could we have a lazy function which expands the permission tree, and then a second function which just searches that tree.
 
 The expansion function seems useful for diagnostic purposes.
 -}
 check' :: RelationState
-      -> Object -- ^ resource
-      -> Text   -- ^ permission
-      -> Object -- ^ subject
-      -> Access
+       -> Object -- ^ resource
+       -> Text   -- ^ permission
+       -> Object -- ^ subject
+       -> Access
 check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resourceTy) (ObjectId resourceId)) perm subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
   case filter (\(RelationTuple resource' _ _) -> resource == resource') rsTuples of
-    [] -> NotAllowed [ "no tuples for resource located" ]
+    [] -> NotAllowed [ "no tuples for resource located - resource: "  <> (T.pack $ show $ ppObject resource) ]
     relationTuples ->
       -- find the object definition that is relevant to the 'resourceType'
       case Map.lookup resourceTy rsDefMap of
@@ -156,6 +151,7 @@ check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resou
               let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ resourceType $ objectResource st)
               in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
                  -- fixme: this check could be done in parallel
+                 -- fixme: does it makes since to pass extraTuples here? or should they have already been filtered out?
                  mconcat $ map (\subj -> check' rs subj permOrRel subject) subjs
 
 lookupSubjects :: [RelationTuple] -> Object -> Relation -> [ Object ]

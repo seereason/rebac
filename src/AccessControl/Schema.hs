@@ -6,10 +6,12 @@
 module AccessControl.Schema where
 
 import Data.Data (Data)
+import Data.Either (lefts, rights)
 import Data.SafeCopy (SafeCopy)
-import Data.List (intersperse)
+import Data.List (intersperse, find)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.Maybe (catMaybes, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable (Typeable)
@@ -26,19 +28,6 @@ import Text.Megaparsec.Error
 import Text.PrettyPrint.HughesPJ ((<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Text.Megaparsec.Char.Lexer as L -- (1)
-
--- data Schema = Schema
---  {
-{-
-newtype Relation = Relation { unRelation :: Text }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
-
-data RelationTuple = RelationTuple
-  { object   :: Object
-  , relation :: Relation
-  , user     :: User
-  }
--}
 
 instance Lift Text where
   lift t = lift (T.unpack t)
@@ -60,6 +49,12 @@ ppText t = PP.text (T.unpack t)
 newtype Relation = Relation { unRelation :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+class ToRelation a where
+  toRelation :: a -> Relation
+
+instance ToRelation Relation where
+  toRelation = id
+
 instance SafeCopy Relation
 
 ppRelation :: Relation -> PP.Doc
@@ -72,6 +67,12 @@ newtype Permission = Permission { unPermission :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 instance SafeCopy Permission
+
+class ToPermission a where
+  toPermission :: a -> Permission
+
+instance ToPermission Permission where
+  toPermission = id
 
 ppPermission :: Permission -> PP.Doc
 ppPermission (Permission r) = ppText r
@@ -133,7 +134,8 @@ instance SafeCopy Subject
 data TypeReference = TypeReference
   { objectResource :: Resource
   , objectRelation :: Maybe Text
-  }  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+  }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 instance SafeCopy TypeReference
 
@@ -156,13 +158,17 @@ data ObjectPermission = ObjectPermission
 instance SafeCopy ObjectPermission
 
 -- does not preserve comments or whitespace
+--
+-- A definition has a name and a list of relations and permissions
 data Definition = Definition
   { defName  :: Text
   , defDecls :: [ Either ObjectRelation ObjectPermission ]
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
-
 instance SafeCopy Definition
+
+objectRelations :: Definition -> [ ObjectRelation ]
+objectRelations def = lefts (defDecls def)
 
 data Schema = Schema
   { definitions :: [ Definition ]
@@ -171,7 +177,22 @@ data Schema = Schema
 
 instance SafeCopy Schema
 
--- * Printer
+knownObjectTypes :: Schema -> [ ObjectType ]
+knownObjectTypes (Schema defs) = map (ObjectType . defName) defs
+
+knownRelations :: Schema -> [ Relation ]
+knownRelations (Schema defs) = concatMap (map rel . objectRelations) defs
+  where
+    rel :: ObjectRelation -> Relation
+    rel or = Relation (orName or)
+
+-- * Predicates
+
+knownObjectType :: Schema -> ObjectType -> Bool
+knownObjectType (Schema defs) (ObjectType ot) =
+  isJust $ find (\d -> defName d == ot) defs
+
+-- * Printers
 
 ppResource :: Resource -> PP.Doc
 ppResource (Resource n mId) =

@@ -1,10 +1,11 @@
 {-# language DeriveDataTypeable #-}
 {-# language DeriveGeneric #-}
+{-# language MultiParamTypeClasses #-}
 {-# language OverloadedStrings #-}
 {-# language QuasiQuotes, TemplateHaskell, DeriveLift #-}
 module AccessControl.Relation where
 
-import AccessControl.Schema (Relation(..), pName, pRelation, ppRelation, pObjectType, ppObjectType, ppText)
+import AccessControl.Schema (Permission(..), Relation(..), ToPermission(..), ToRelation(..), pName, pRelation, ppRelation, pObjectType, ppObjectType, ppText)
 import Data.Data (Data)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -37,6 +38,9 @@ newtype ObjectType = ObjectType { unObjectType :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 -}
 
+-- * ObjectId
+
+-- An `ObjectId` identifies an object within an `ObjectType` namespace
 newtype ObjectId = ObjectId { unObjectId :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
@@ -48,6 +52,13 @@ ppObjectId (ObjectId i) = ppText i
 pObjectId :: Parser ObjectId
 pObjectId = ObjectId <$> pName
 
+-- * Object
+
+-- | An 'Object' has an 'ObjectType' and 'ObjectId'.
+--
+-- An 'Object' identifies a resource or subject.
+--
+-- The 'ObjectId' is unique for an particular 'ObjectType' but not across all 'ObjectTypes'.
 data Object = Object
   { objectType :: ObjectType
   , objectId   :: ObjectId
@@ -55,6 +66,12 @@ data Object = Object
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 instance SafeCopy Object
+
+class ToObject a where
+  toObject :: a -> Object
+
+instance ToObject Object where
+  toObject = id
 
 ppObject :: Object -> Doc
 ppObject (Object ot oi) =
@@ -67,6 +84,9 @@ pObject =
      oi <- pObjectId
      pure $ Object ot oi
 
+-- * RelationTuple
+
+-- | Define a relationship between a 'resource' and 'subject'
 data RelationTuple = RelationTuple
   { resource :: Object
   , relation :: Relation
@@ -76,6 +96,12 @@ data RelationTuple = RelationTuple
 
 instance SafeCopy RelationTuple
 
+class (ToObject resource, ToPermission permission, ToObject subject) => KnownPermission resource permission subject
+instance KnownPermission Object Permission Object
+{-
+toRelationTuple :: (KnownPermission resource relation subject, ToObject resource, ToRelation relation, ToObject subject) => resource -> relation -> subject -> RelationTuple
+toRelationTuple resource relation subject = RelationTuple (toObject resource) (toRelation relation) (toObject subject)
+-}
 ppRelationTuple :: RelationTuple -> Doc
 ppRelationTuple (RelationTuple res rel subj) =
   ppObject res <> PP.char '#' <> ppRelation rel <> PP.char '@' <> ppObject subj
@@ -93,15 +119,22 @@ pRelationTuple =
      subj <- pObject
      pure $ RelationTuple res rel subj
 
-
 pRelationTuples :: Parser [ RelationTuple ]
 pRelationTuples =
   do scnl
      many (pRelationTuple <* scnl)
 
+-- * predicates
 
 hasSubjectType :: ObjectType -> RelationTuple -> Bool
 hasSubjectType st' (RelationTuple _ _ (Object st _)) = st == st'
+
+hasSubject :: Object -> RelationTuple -> Bool
+hasSubject subj (RelationTuple _ _ subj') = subj == subj'
+
+hasResource :: Object -> RelationTuple -> Bool
+hasResource res (RelationTuple res' _ _) = res == res'
+
 
 -- * QuasiQuoters
 

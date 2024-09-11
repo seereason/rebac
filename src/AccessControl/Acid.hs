@@ -26,11 +26,11 @@ getSchema =
   do rs <- ask
      pure $ rsSchema rs
 
-check :: Object -- ^ resource
-      -> Text   -- ^ permission
-      -> Object -- ^ subject
+check :: Object   -- ^ resource
+      -> Permission -- ^ permission
+      -> Object   -- ^ subject
       -> Query RelationState Access
-check resource perm subject =
+check resource (Permission perm) subject =
   do rs <- ask
      pure $ check' rs resource perm subject
 
@@ -46,10 +46,16 @@ removeRelationTuple rt =
   do rs <- get
      put $ rs { rsTuples = filter ((/=) rt) (rsTuples rs) }
 
+getRelationTuples :: Query RelationState [ RelationTuple ]
+getRelationTuples =
+  do rs <- ask
+     pure $ rsTuples rs
+
 makeAcidic ''RelationState
   [ 'getSchema
   , 'putSchema
   , 'check
   , 'addRelationTuple
   , 'removeRelationTuple
+  , 'getRelationTuples
   ]
