@@ -25,8 +25,8 @@ import GHC.Generics
 import Text.PrettyPrint.HughesPJ (Doc, (<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 
--- debugTrace = trace
-debugTrace = const id
+debugTrace = trace
+-- debugTrace = const id
 
 data RelPerm = RelPerm
   { relMap  :: Map Text (NonEmpty TypeReference)
@@ -107,8 +107,9 @@ check' :: RelationState
 check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resourceTy) (ObjectId resourceId)) perm subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
-  case filter (\(RelationTuple resource' _ _) -> resource == resource') rsTuples of
-    [] -> NotAllowed [ "no tuples for resource located - resource: "  <> (T.pack $ show $ ppObject resource) ]
+  case filter (\(RelationTuple resource' _ _ _) -> resource == resource') rsTuples of
+    [] -> debugTrace ("## rsTuples = " ++ show (ppRelationTuples rsTuples)) $
+          NotAllowed [ "no tuples for resource located - resource: "  <> (T.pack $ show $ ppObject resource) ]
     relationTuples ->
       -- find the object definition that is relevant to the 'resourceType'
       case Map.lookup resourceTy rsDefMap of
@@ -131,9 +132,15 @@ check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resou
         (Just subjectTypes) ->
           debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ show (ppTypeReference tr) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
           let (direct, others) = partition (hasSubjectType (ObjectType subjectType)) relationTuples
-          in if (RelationTuple resource (Relation relName) subject) `elem` direct
+          in if (RelationTuple resource (Relation relName) subject Nothing) `elem` direct
                then Allowed
-               else NotAllowed [ T.pack $ show $ ppRelationTuples others ]
+               else case others of
+                      -- FIXME: add a fold to check all the others and accumalet NotAllowed or Allowed
+                      ((RelationTuple res perm subj (Just (Relation subRelation))):os) ->
+                        check' rs subj subRelation subject
+--                         NotAllowed [ T.pack $ "FIXME -- need to search these indirect matches " ++ (show $ ppRelationTuples others) ]
+                      [] -> NotAllowed [ "add a reason here" ]
+                      _ -> NotAllowed [ T.pack $ "others =  " ++ show (ppRelationTuples others) ]
     checkExpr relationTuples (Union l r) rm =
       case checkExpr relationTuples l rm of
         Allowed -> Allowed
@@ -156,11 +163,11 @@ check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resou
 
 lookupSubjects :: [RelationTuple] -> Object -> Relation -> [ Object ]
 lookupSubjects tuples res rel =
-  [ subj | (RelationTuple res' rel' subj) <- tuples, res == res', rel == rel' ]
+  [ subj | (RelationTuple res' rel' subj mSubRelation) <- tuples, res == res', rel == rel' ]
 
 lookupSubjectsWithType :: [RelationTuple] -> Object -> Relation -> ObjectType -> [ Object ]
 lookupSubjectsWithType tuples res rel objectType =
-  [ subj | (RelationTuple res' rel' subj@(Object objectType' _)) <- tuples, res == res', rel == rel', objectType == objectType' ]
+  [ subj | (RelationTuple res' rel' subj@(Object objectType' _) mSubRelation) <- tuples, res == res', rel == rel', objectType == objectType' ]
 
 
 -- * Permission Tree
@@ -288,3 +295,29 @@ t1 =
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject sean)
      print $ check' rs somedocument view sean
+
+
+schema2 =
+  [schema|
+    definition role {
+	relation member: user | group#membership
+	permission allowed = member
+    }
+
+    definition user {}
+
+    definition group {
+	relation admin: user
+	relation member: user
+	permission membership = admin + member
+    }
+ |]
+
+rels2 =
+  [rels|
+     group:sharks#admin@user:chico
+     role:cast#member@user:gus
+     role:cast#member@group:sharks#membership
+   |]
+
+rs2 = mkRelationState schema2 rels2

@@ -88,9 +88,10 @@ pObject =
 
 -- | Define a relationship between a 'resource' and 'subject'
 data RelationTuple = RelationTuple
-  { resource :: Object
-  , relation :: Relation
-  , subject  :: Object
+  { resource        :: Object
+  , relation        :: Relation
+  , subject         :: Object
+  , subjectRelation :: Maybe Relation
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
@@ -103,8 +104,12 @@ toRelationTuple :: (KnownPermission resource relation subject, ToObject resource
 toRelationTuple resource relation subject = RelationTuple (toObject resource) (toRelation relation) (toObject subject)
 -}
 ppRelationTuple :: RelationTuple -> Doc
-ppRelationTuple (RelationTuple res rel subj) =
-  ppObject res <> PP.char '#' <> ppRelation rel <> PP.char '@' <> ppObject subj
+ppRelationTuple (RelationTuple res rel subj mSubRelation) =
+  ppObject res <> PP.char '#' <> ppRelation rel <> PP.char '@' <> ppObject subj <> ppMaybeRelation mSubRelation
+
+ppMaybeRelation :: Maybe Relation -> Doc
+ppMaybeRelation Nothing = PP.empty
+ppMaybeRelation (Just rel) = PP.char '#' <> ppRelation rel
 
 ppRelationTuples :: [RelationTuple] -> Doc
 ppRelationTuples rt =
@@ -117,7 +122,10 @@ pRelationTuple =
      rel <- pRelation
      char '@'
      subj <- pObject
-     pure $ RelationTuple res rel subj
+     mSubRelation <- optional $
+       do char '#'
+          pRelation
+     pure $ RelationTuple res rel subj mSubRelation
 
 pRelationTuples :: Parser [ RelationTuple ]
 pRelationTuples =
@@ -127,13 +135,13 @@ pRelationTuples =
 -- * predicates
 
 hasSubjectType :: ObjectType -> RelationTuple -> Bool
-hasSubjectType st' (RelationTuple _ _ (Object st _)) = st == st'
+hasSubjectType st' (RelationTuple _ _ (Object st _) _) = st == st'
 
 hasSubject :: Object -> RelationTuple -> Bool
-hasSubject subj (RelationTuple _ _ subj') = subj == subj'
+hasSubject subj (RelationTuple _ _ subj' _) = subj == subj'
 
 hasResource :: Object -> RelationTuple -> Bool
-hasResource res (RelationTuple res' _ _) = res == res'
+hasResource res (RelationTuple res' _ _ _) = res == res'
 
 
 -- * QuasiQuoters
