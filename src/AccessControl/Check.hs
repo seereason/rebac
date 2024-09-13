@@ -25,8 +25,8 @@ import GHC.Generics
 import Text.PrettyPrint.HughesPJ (Doc, (<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 
-debugTrace = trace
--- debugTrace = const id
+-- debugTrace = trace
+debugTrace = const id
 
 data RelPerm = RelPerm
   { relMap  :: Map Text (NonEmpty TypeReference)
@@ -134,13 +134,15 @@ check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resou
           let (direct, others) = partition (hasSubjectType (ObjectType subjectType)) relationTuples
           in if (RelationTuple resource (Relation relName) subject Nothing) `elem` direct
                then Allowed
-               else case others of
-                      -- FIXME: add a fold to check all the others and accumalet NotAllowed or Allowed
-                      ((RelationTuple res perm subj (Just (Relation subRelation))):os) ->
-                        check' rs subj subRelation subject
---                         NotAllowed [ T.pack $ "FIXME -- need to search these indirect matches " ++ (show $ ppRelationTuples others) ]
-                      [] -> NotAllowed [ "add a reason here" ]
-                      _ -> NotAllowed [ T.pack $ "others =  " ++ show (ppRelationTuples others) ]
+               else let checkOthers reasons [] = NotAllowed reasons
+                        -- why would the following case happen?
+                        checkOthers oldReasons ((RelationTuple res perm subj Nothing) : os) =
+                          debugTrace "not sure why we are seeing this checkOthers case" $ checkOthers oldReasons os
+                        checkOthers oldReasons ((RelationTuple res perm subj (Just (Relation subRelation))):os) =
+                          case check' rs subj subRelation subject of
+                            Allowed -> Allowed
+                            (NotAllowed reasons) -> checkOthers (oldReasons ++ reasons) os
+                    in checkOthers [] others
     checkExpr relationTuples (Union l r) rm =
       case checkExpr relationTuples l rm of
         Allowed -> Allowed
