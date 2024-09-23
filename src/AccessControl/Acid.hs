@@ -26,9 +26,9 @@ getSchema =
   do rs <- ask
      pure $ rsSchema rs
 
-check :: Object   -- ^ resource
+check :: Object     -- ^ resource
       -> Permission -- ^ permission
-      -> Object   -- ^ subject
+      -> Object     -- ^ subject
       -> Query RelationState Access
 check resource (Permission perm) subject =
   do rs <- ask

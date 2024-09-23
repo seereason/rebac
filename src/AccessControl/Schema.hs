@@ -1,14 +1,16 @@
 {-# language DeriveDataTypeable #-}
 {-# language DeriveGeneric #-}
+{-# language MultiParamTypeClasses #-}
 {-# language OverloadedStrings #-}
 {-# language QuasiQuotes, TemplateHaskell, DeriveLift #-}
 {-# language StandaloneDeriving #-}
 module AccessControl.Schema where
 
+import AccessControl.Relation (Object(..), ObjectType(..), Relation(..), ToObject(..), pName, pRelation, ppRelation, ppText, sc, scnl)
 import Data.Data (Data)
 import Data.Either (lefts, rights)
 import Data.SafeCopy (SafeCopy)
-import Data.List (intersperse, find)
+import Data.List (find, intersperse, nub)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Maybe (catMaybes, isJust)
@@ -29,39 +31,12 @@ import Text.PrettyPrint.HughesPJ ((<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Text.Megaparsec.Char.Lexer as L -- (1)
 
-instance Lift Text where
-  lift t = lift (T.unpack t)
-
 -- instance (Lift a) => Lift (NonEmpty a) where
 --  lift _ = undefined
 
 deriving instance (Lift a) => Lift (NonEmpty a)
 
-ppText :: Text -> PP.Doc
-ppText t = PP.text (T.unpack t)
-
--- a name could be an object type, object id, relation name, etc.
--- pName :: Parser Text
--- pName = T.pack <$> some alphaNumChar
-
--- in something like 'group:123#member', this is just the 'member' part.
--- fixme: this should use a smart constructor to ensure that the `Text` value only contains valid symbols.
-newtype Relation = Relation { unRelation :: Text }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
-
-class ToRelation a where
-  toRelation :: a -> Relation
-
-instance ToRelation Relation where
-  toRelation = id
-
-instance SafeCopy Relation
-
-ppRelation :: Relation -> PP.Doc
-ppRelation (Relation r) = ppText r
-
-pRelation :: Parser Relation
-pRelation = Relation <$> pName
+-- * Permission
 
 newtype Permission = Permission { unPermission :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
@@ -84,21 +59,13 @@ ppPermissionRelation :: Either Permission Relation -> PP.Doc
 ppPermissionRelation (Left p)  = ppPermission p
 ppPermisisonRelation (Right r) = ppRelation r
 
+class (ToObject resource, ToPermission permission, ToObject subject) => KnownPermission resource permission subject
+instance KnownPermission Object Permission Object
+
 data Comment
   = SingleLineComment Text
   | MultiLineComment [ Text ]
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
-
-newtype ObjectType = ObjectType { unObjectType :: Text }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
-
-instance SafeCopy ObjectType
-
-ppObjectType :: ObjectType -> PP.Doc
-ppObjectType (ObjectType ty) = ppText ty
-
-pObjectType :: Parser ObjectType
-pObjectType = ObjectType <$> pName
 
 data ObjectRelation = ObjectRelation
   { orName :: Text
@@ -178,14 +145,20 @@ data Schema = Schema
 instance SafeCopy Schema
 
 knownObjectTypes :: Schema -> [ ObjectType ]
-knownObjectTypes (Schema defs) = map (ObjectType . defName) defs
+knownObjectTypes (Schema defs) = nub $ map (ObjectType . defName) defs
 
 knownRelations :: Schema -> [ Relation ]
-knownRelations (Schema defs) = concatMap (map rel . objectRelations) defs
+knownRelations (Schema defs) = nub $ concatMap (map rel . objectRelations) defs
   where
     rel :: ObjectRelation -> Relation
     rel or = Relation (orName or)
-
+{-
+knownSubjectRelations :: Schema -> [ Relation ]
+knownSubjectRelations (Schema defs) = nub $ concatMap (map rel . objectRelations) defs
+  where
+    rel :: ObjectRelation -> Relation
+    rel or = Relation (orObjectTypes or)
+-}
 -- * Predicates
 
 knownObjectType :: Schema -> ObjectType -> Bool
@@ -241,27 +214,12 @@ ppSchema (Schema defs) =
 
 type Parser = Parsec Void Text
 
-sc :: Parser ()
-sc = L.space
-  hspace1
-  (L.skipLineComment "#")
-  (L.skipBlockComment "/*" "*/")
-
-scnl :: Parser ()
-scnl = L.space
-  space1
-  (L.skipLineComment "#")
-  (L.skipBlockComment "/*" "*/")
-
 lexeme :: Parser a -> Parser a
 lexeme = L.lexeme sc
 
 symbol :: Text -> Parser Text
 symbol = L.symbol sc
 
--- fixme: a more strict parser might only allow [a-z][a-z0-9_]{1,62}[a-z0-9]
-pName :: Parser Text
-pName = T.pack <$> some (alphaNumChar <|> char '_')
 
 lcurlyBrace :: Parser Char
 lcurlyBrace = char '{'

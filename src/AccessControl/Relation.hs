@@ -1,11 +1,12 @@
 {-# language DeriveDataTypeable #-}
 {-# language DeriveGeneric #-}
+{-# language FlexibleInstances #-}
 {-# language MultiParamTypeClasses #-}
 {-# language OverloadedStrings #-}
 {-# language QuasiQuotes, TemplateHaskell, DeriveLift #-}
 module AccessControl.Relation where
 
-import AccessControl.Schema (Permission(..), Relation(..), ToPermission(..), ToRelation(..), pName, pRelation, ppRelation, pObjectType, ppObjectType, ppText)
+-- import AccessControl.Schema (Permission(..), Relation(..), ToPermission(..), ToRelation(..), pName, pRelation, ppRelation, pObjectType, ppObjectType, ppText)
 import Data.Data (Data)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -13,30 +14,89 @@ import Data.SafeCopy (SafeCopy)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable (Typeable)
+import Data.UserId (UserId(..))
 import Data.Void (Void)
 import GHC.Generics
 import Language.Haskell.TH
 import Language.Haskell.TH.Quote
 import Language.Haskell.TH.Syntax
 import Language.Haskell.TH.Lib (tupleT)
-
 import Text.Megaparsec
 import Text.Megaparsec.Char
 import Text.PrettyPrint.HughesPJ (Doc, (<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Text.Megaparsec.Char.Lexer as L -- (1)
 
-import AccessControl.Schema (ObjectType(..),sc, scnl) -- for Lift Text instance
+-- import AccessControl.Schema (ObjectType(..),sc, scnl) -- for Lift Text instance
 
 -- FIXME: how does string escaping work?
 
 
+instance Lift Text where
+  lift t = lift (T.unpack t)
+
+
 type Parser = Parsec Void Text
+
+-- fixme: a more strict parser might only allow [a-z][a-z0-9_]{1,62}[a-z0-9]
+pName :: Parser Text
+pName = T.pack <$> some (alphaNumChar <|> char '_')
+
+
+ppText :: Text -> PP.Doc
+ppText t = PP.text (T.unpack t)
+
+sc :: Parser ()
+sc = L.space
+  hspace1
+  (L.skipLineComment "#")
+  (L.skipBlockComment "/*" "*/")
+
+scnl :: Parser ()
+scnl = L.space
+  space1
+  (L.skipLineComment "#")
+  (L.skipBlockComment "/*" "*/")
 
 {-
 newtype ObjectType = ObjectType { unObjectType :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 -}
+
+-- * Relation
+-- a name could be an object type, object id, relation name, etc.
+
+-- in something like 'group:123#member', this is just the 'member' part.
+-- fixme: this should use a smart constructor to ensure that the `Text` value only contains valid symbols.
+newtype Relation = Relation { unRelation :: Text }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+class ToRelation a where
+  toRelation :: a -> Relation
+
+instance ToRelation Relation where
+  toRelation = id
+
+instance SafeCopy Relation
+
+ppRelation :: Relation -> PP.Doc
+ppRelation (Relation r) = ppText r
+
+pRelation :: Parser Relation
+pRelation = Relation <$> pName
+
+-- * ObjectType
+
+newtype ObjectType = ObjectType { unObjectType :: Text }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy ObjectType
+
+ppObjectType :: ObjectType -> PP.Doc
+ppObjectType (ObjectType ty) = ppText ty
+
+pObjectType :: Parser ObjectType
+pObjectType = ObjectType <$> pName
 
 -- * ObjectId
 
@@ -97,8 +157,6 @@ data RelationTuple = RelationTuple
 
 instance SafeCopy RelationTuple
 
-class (ToObject resource, ToPermission permission, ToObject subject) => KnownPermission resource permission subject
-instance KnownPermission Object Permission Object
 {-
 toRelationTuple :: (KnownPermission resource relation subject, ToObject resource, ToRelation relation, ToObject subject) => resource -> relation -> subject -> RelationTuple
 toRelationTuple resource relation subject = RelationTuple (toObject resource) (toRelation relation) (toObject subject)
@@ -143,9 +201,10 @@ hasSubject subj (RelationTuple _ _ subj' _) = subj == subj'
 hasResource :: Object -> RelationTuple -> Bool
 hasResource res (RelationTuple res' _ _ _) = res == res'
 
+hasRelation :: Relation -> RelationTuple -> Bool
+hasRelation rel (RelationTuple _ rel' _ _) = rel == rel'
 
 -- * QuasiQuoters
-
 
 objectExpr :: String -> Q Exp
 objectExpr s =
@@ -188,3 +247,10 @@ rels = QuasiQuoter
   , quoteType = error "rels does not yet define an type quoter"
   , quoteDec  = error "rels does not yet define a declaration quoter"
   }
+
+instance ToObject UserId where
+  toObject (UserId n) = Object (ObjectType "user") (ObjectId $ T.pack $ show n)
+
+instance ToObject (Maybe UserId) where
+  toObject (Just (UserId n)) = Object (ObjectType "user") (ObjectId $ T.pack $ show n)
+  toObject Nothing           = Object (ObjectType "user") (ObjectId $ "anonymous")

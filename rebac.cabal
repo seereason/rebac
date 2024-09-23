@@ -25,12 +25,13 @@ library
   build-depends:       acid-state,
                        base ^>=4.12.0.0,
                        containers,
-                       megaparsec ^>=9.6.1,
+                       megaparsec,
                        mtl,
                        pretty ^>=1.1.3.6,
                        safecopy,
                        text ^>=1.2,
-                       template-haskell
+                       template-haskell,
+                       userid
   hs-source-dirs:      src
   default-language:    Haskell2010
 
@@ -45,4 +46,5 @@ test-suite Test
                      QuickCheck,
                      text,
                      rebac
+
 
