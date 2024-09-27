@@ -358,6 +358,12 @@ test_pSchema =
        (Right s) -> print $ ppSchema s
        (Left e) -> putStrLn $ errorBundlePretty e
 
+parseSchema :: Text -> Either String Schema
+parseSchema t =
+  case runParser pSchema "" t of
+    (Right s) -> Right s
+    (Left e)  -> Left (errorBundlePretty e)
+
 schemaExpr :: String -> Q Exp
 schemaExpr s =
   case runParser pSchema s (T.pack s) of

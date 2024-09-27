@@ -99,12 +99,13 @@ As an alternative implementation -- could we have a lazy function which expands 
 
 The expansion function seems useful for diagnostic purposes.
 -}
-check' :: RelationState
+check :: Map Text RelPerm
+       -> [ RelationTuple ]
        -> Object -- ^ resource
-       -> Text   -- ^ permission
+       -> Permission   -- ^ permission
        -> Object -- ^ subject
        -> Access
-check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resourceTy) (ObjectId resourceId)) perm subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
+check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) (ObjectId resourceId)) (Permission perm) subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
   case filter (\(RelationTuple resource' _ _ _) -> resource == resource') rsTuples of
@@ -139,7 +140,7 @@ check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resou
                         checkOthers oldReasons ((RelationTuple res perm subj Nothing) : os) =
                           debugTrace "not sure why we are seeing this checkOthers case" $ checkOthers oldReasons os
                         checkOthers oldReasons ((RelationTuple res perm subj (Just (Relation subRelation))):os) =
-                          case check' rs subj subRelation subject of
+                          case check rsDefMap rsTuples subj (Permission subRelation) subject of
                             Allowed -> Allowed
                             (NotAllowed reasons) -> checkOthers (oldReasons ++ reasons) os
                     in checkOthers [] others
@@ -161,7 +162,7 @@ check' rs@(RelationState rsTuples rsDefMap _) resource@(Object (ObjectType resou
               in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
                  -- fixme: this check could be done in parallel
                  -- fixme: does it makes since to pass extraTuples here? or should they have already been filtered out?
-                 mconcat $ map (\subj -> check' rs subj permOrRel subject) subjs
+                 mconcat $ map (\subj -> check rsDefMap rsTuples subj (Permission permOrRel) subject) subjs
 
 lookupSubjects :: [RelationTuple] -> Object -> Relation -> [ Object ]
 lookupSubjects tuples res rel =
@@ -277,26 +278,29 @@ hannah = [object| user:hannah |]
 
 -- some relation names
 
-edit = "edit"
-view = "view"
+edit = Permission "edit"
+view = Permission "view"
 
 rs = mkRelationState schema1 rels1
+
+defMap1 = mkDefMap (definitions schema1)
+
 t1 =
   do putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject bob)
-     print $ check' rs somedocument view bob
+     print $ check defMap1 rels1 somedocument view bob
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject hannah)
-     print $ check' rs somedocument view hannah
+     print $ check defMap1 rels1 somedocument view hannah
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, edit, ppObject jill)
-     print $ check' rs somedocument edit jill
+     print $ check defMap1 rels1 somedocument edit jill
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, edit, ppObject sean)
-     print $ check' rs somedocument edit sean
+     print $ check defMap1 rels1 somedocument edit sean
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject sean)
-     print $ check' rs somedocument view sean
+     print $ check defMap1 rels1 somedocument view sean
 
 
 schema2 =
