@@ -58,14 +58,9 @@ scnl = L.space
   (L.skipLineComment "#")
   (L.skipBlockComment "/*" "*/")
 
-{-
-newtype ObjectType = ObjectType { unObjectType :: Text }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
--}
-
 -- * Relation
--- a name could be an object type, object id, relation name, etc.
 
+-- | a name could be an object type, object id, relation name, etc.
 -- in something like 'group:123#member', this is just the 'member' part.
 -- fixme: this should use a smart constructor to ensure that the `Text` value only contains valid symbols.
 newtype Relation = Relation { unRelation :: Text }
@@ -107,10 +102,15 @@ newtype ObjectId = ObjectId { unObjectId :: Text }
 instance SafeCopy ObjectId
 
 ppObjectId :: ObjectId -> Doc
-ppObjectId (ObjectId i) = ppText i
+ppObjectId (ObjectId i)   = ppText i
+-- ppObjectId ObjectWildcard = PP.char '*'
 
 pObjectId :: Parser ObjectId
-pObjectId = ObjectId <$> pName
+pObjectId =
+--   do char '*'
+--     pure ObjectWildcard
+--  <|>
+     ObjectId <$> pName
 
 -- * Object
 

@@ -50,20 +50,6 @@ ppRelPerm :: RelPerm -> Doc
 ppRelPerm (RelPerm r p) =
   ppRelMap r $+$ ppPermMap p
 
-data RelationState = RelationState
-  { rsTuples      :: [RelationTuple]
-  , rsDefMap      :: Map Text RelPerm
-  , rsSchema      :: Schema
-  }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
-
-mkRelationState :: Schema -> [RelationTuple] -> RelationState
-mkRelationState s@(Schema defs) tuples =
-  RelationState { rsTuples      = tuples
-                , rsDefMap      = mkDefMap defs
-                , rsSchema      = s
-                }
-
 mkDefMap
   :: [Definition]
   -> Map Text RelPerm
@@ -100,12 +86,12 @@ As an alternative implementation -- could we have a lazy function which expands 
 The expansion function seems useful for diagnostic purposes.
 -}
 check :: Map Text RelPerm
-       -> [ RelationTuple ]
-       -> Object -- ^ resource
-       -> Permission   -- ^ permission
-       -> Object -- ^ subject
-       -> Access
-check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) (ObjectId resourceId)) (Permission perm) subject@(Object (ObjectType subjectType) (ObjectId subjectId)) =
+      -> [ RelationTuple ]
+      -> Object       -- ^ resource
+      -> Permission   -- ^ permission
+      -> Object       -- ^ subject
+      -> Access
+check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject@(Object (ObjectType subjectType) _) =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
   case filter (\(RelationTuple resource' _ _ _) -> resource == resource') rsTuples of
@@ -200,6 +186,7 @@ data PermissionTree = PermissionTree
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
 
+{-
 -- find the permission tree for all the subjects of a resource
 expandPermissionTree :: RelationState -> Object -> Either Relation Permission -> PermissionTree
 expandPermissionTree rs resource relOrPerm =
@@ -210,120 +197,4 @@ expandPermissionTree rs resource relOrPerm =
                      , expandedSubject  = Left (Set.empty)
                      }
 
-
--- * Example
-
--- https://authzed.com/blog/check-it-out
-
-schema1 :: Schema
-schema1 =
-  [schema|
-    definition user {}
-
-    definition organization {
-        relation admin: user
-
-        permission can_admin = admin
-    }
-
-    definition document {
-        relation org: organization
-
-        relation owner: user
-        relation reader: user
-
-        permission edit = owner
-        permission view = reader + owner + org->can_admin
-
-    }
-|]
-
-rels1 :: [RelationTuple]
-rels1 =
-  [rels|
-    document:somedocument#reader@user:sean                 # Sean is a reader on somedocument
-    document:somedocument#reader@user:fred                 # Fred is a reader on somedocument
-    document:somedocument#owner@user:jill                  # Jill is the owner of somedocument
-    organization:theorg#admin@user:hannah                  # Hannah is the admin of the organization
-    document:somedocument#org@organization:theorg          # `theorg` is the organization for the document
-  |]
-
--- some resources
-
-somedocument :: Object
-somedocument = Object (ObjectType "document") (ObjectId "somedocument")
-
--- some users
-
-sean :: Object
-sean = Object (ObjectType "user") (ObjectId "sean")
-
-fred :: Object
-fred = Object (ObjectType "user") (ObjectId "fred")
-
-jill :: Object
-jill = Object (ObjectType "user") (ObjectId "jill")
-
-reader :: Relation
-reader = Relation "reader"
-
-owner :: Relation
-owner = Relation "owner"
-
-bob :: Object
-bob = [object| user:bob |]
-
-hannah :: Object
-hannah = [object| user:hannah |]
-
--- some relation names
-
-edit = Permission "edit"
-view = Permission "view"
-
-rs = mkRelationState schema1 rels1
-
-defMap1 = mkDefMap (definitions schema1)
-
-t1 =
-  do putStrLn "-----------------------------------------------------"
-     print $ (ppObject somedocument, view, ppObject bob)
-     print $ check defMap1 rels1 somedocument view bob
-     putStrLn "-----------------------------------------------------"
-     print $ (ppObject somedocument, view, ppObject hannah)
-     print $ check defMap1 rels1 somedocument view hannah
-     putStrLn "-----------------------------------------------------"
-     print $ (ppObject somedocument, edit, ppObject jill)
-     print $ check defMap1 rels1 somedocument edit jill
-     putStrLn "-----------------------------------------------------"
-     print $ (ppObject somedocument, edit, ppObject sean)
-     print $ check defMap1 rels1 somedocument edit sean
-     putStrLn "-----------------------------------------------------"
-     print $ (ppObject somedocument, view, ppObject sean)
-     print $ check defMap1 rels1 somedocument view sean
-
-
-schema2 =
-  [schema|
-    definition role {
-	relation member: user | group#membership
-	permission allowed = member
-    }
-
-    definition user {}
-
-    definition group {
-	relation admin: user
-	relation member: user
-	permission membership = admin + member
-    }
- |]
-
-rels2 =
-  [rels|
-     group:sharks#admin@user:chico
-     role:cast#member@user:gus
-     role:cast#member@group:sharks#membership
-   |]
-
-rs2 = mkRelationState schema2 rels2
+-}

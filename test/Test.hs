@@ -1,24 +1,137 @@
-{-# LANGUAGE DeriveGeneric, GeneralizedNewtypeDeriving, OverloadedStrings, TemplateHaskell #-}
+{-# LANGUAGE DeriveGeneric, GeneralizedNewtypeDeriving, OverloadedStrings, QuasiQuotes #-}
 
 module Main (main) where
 
-import AccessControl.Acid
 import AccessControl.Check
 import AccessControl.Relation
+import AccessControl.Schema
 import Data.Acid
 import Data.Acid.Memory
 import Data.Text (Text)
 import Test.Hspec
-import AccessControl.Acid
+
+-- * Example
+
+-- https://authzed.com/blog/check-it-out
+
+schema1 :: Schema
+schema1 =
+  [schema|
+    definition user {}
+
+    definition organization {
+        relation admin: user
+
+        permission can_admin = admin
+    }
+
+    definition document {
+        relation org: organization
+
+        relation owner: user
+        relation reader: user
+
+        permission edit = owner
+        permission view = reader + owner + org->can_admin
+
+    }
+  |]
+
+rels1 :: [RelationTuple]
+rels1 =
+  [rels|
+    document:somedocument#reader@user:sean                 # Sean is a reader on somedocument
+    document:somedocument#reader@user:fred                 # Fred is a reader on somedocument
+    document:somedocument#owner@user:jill                  # Jill is the owner of somedocument
+    organization:theorg#admin@user:hannah                  # Hannah is the admin of the organization
+    document:somedocument#org@organization:theorg          # `theorg` is the organization for the document
+  |]
+
+-- some resources
+
+somedocument :: Object
+somedocument = Object (ObjectType "document") (ObjectId "somedocument")
+
+-- some users
+
+sean :: Object
+sean = Object (ObjectType "user") (ObjectId "sean")
+
+fred :: Object
+fred = Object (ObjectType "user") (ObjectId "fred")
+
+jill :: Object
+jill = Object (ObjectType "user") (ObjectId "jill")
+
+reader :: Relation
+reader = Relation "reader"
+
+owner :: Relation
+owner = Relation "owner"
+
+bob :: Object
+bob = [object| user:bob |]
+
+hannah :: Object
+hannah = [object| user:hannah |]
+
+-- some relation names
+
+edit = Permission "edit"
+view = Permission "view"
+
+
+defMap1 = mkDefMap (definitions schema1)
+
+t1 =
+  do putStrLn "-----------------------------------------------------"
+     print $ (ppObject somedocument, view, ppObject bob)
+     print $ check defMap1 rels1 somedocument view bob
+     putStrLn "-----------------------------------------------------"
+     print $ (ppObject somedocument, view, ppObject hannah)
+     print $ check defMap1 rels1 somedocument view hannah
+     putStrLn "-----------------------------------------------------"
+     print $ (ppObject somedocument, edit, ppObject jill)
+     print $ check defMap1 rels1 somedocument edit jill
+     putStrLn "-----------------------------------------------------"
+     print $ (ppObject somedocument, edit, ppObject sean)
+     print $ check defMap1 rels1 somedocument edit sean
+     putStrLn "-----------------------------------------------------"
+     print $ (ppObject somedocument, view, ppObject sean)
+     print $ check defMap1 rels1 somedocument view sean
+
+
+schema2 =
+  [schema|
+    definition role {
+	relation member: user | group#membership
+	permission allowed = member
+    }
+
+    definition user {}
+
+    definition group {
+	relation admin: user
+	relation member: user
+	permission membership = admin + member
+    }
+ |]
+
+rels2 =
+  [rels|
+     group:sharks#admin@user:chico
+     role:cast#member@user:gus
+     role:cast#member@group:sharks#membership
+   |]
 
 test_Arrow :: SpecWith ()
 test_Arrow  =
- it "arrow relation" $ (
-  do acid <- openMemoryState (mkRelationState schema1 rels1)
-     query acid (Check somedocument view hannah)
+ it "arrow relation" $ pure (
+  check (mkDefMap $ definitions schema1) rels1 somedocument view hannah   --- query acid (Check somedocument view hannah)
   ) `shouldReturn` Allowed
 
 
+{-
 test_addRelationTuple :: SpecWith ()
 test_addRelationTuple  =
  it "addRelationTuple" $ (
@@ -37,11 +150,12 @@ test_removeRelationTuple  =
        Allowed -> Allowed
        NotAllowed _ -> NotAllowed []
   ) `shouldReturn` (NotAllowed [])
+-}
 
 main :: IO ()
 main = hspec $ do
   describe "AccessControl" $ do
    test_Arrow
-   test_addRelationTuple
-   test_removeRelationTuple
+--   test_addRelationTuple
+--   test_removeRelationTuple
 

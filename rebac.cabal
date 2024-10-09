@@ -40,7 +40,8 @@ test-suite Test
   type             : exitcode-stdio-1.0
   main-is          : Test.hs
   hs-source-dirs   : test
-  build-depends    : base == 4.*,
+  build-depends    : acid-state,
+                     base == 4.*,
                      HUnit,
                      hspec,
                      QuickCheck,
