@@ -1,12 +1,14 @@
 {-# language DeriveDataTypeable #-}
+{-# language DataKinds #-}
 {-# language DeriveGeneric #-}
+{-# language FlexibleInstances #-}
 {-# language MultiParamTypeClasses #-}
 {-# language OverloadedStrings #-}
 {-# language QuasiQuotes, TemplateHaskell, DeriveLift #-}
 {-# language StandaloneDeriving #-}
 module AccessControl.Schema where
 
-import AccessControl.Relation (Object(..), ObjectType(..), Relation(..), ToObject(..), pName, pRelation, ppRelation, ppText, sc, scnl)
+import AccessControl.Relation (Object(..), ObjectKind(..), ObjectType(..), Relation(..), ToObject(..), pName, pRelation, ppRelation, ppText, sc, scnl)
 import Data.Data (Data)
 import Data.Either (lefts, rights)
 import Data.SafeCopy (SafeCopy)
@@ -41,7 +43,7 @@ deriving instance (Lift a) => Lift (NonEmpty a)
 newtype Permission = Permission { unPermission :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-instance SafeCopy Permission
+-- instance SafeCopy Permission
 
 class ToPermission a where
   toPermission :: a -> Permission
@@ -60,7 +62,7 @@ ppPermissionRelation (Left p)  = ppPermission p
 ppPermisisonRelation (Right r) = ppRelation r
 
 class (ToObject resource, ToPermission permission, ToObject subject) => KnownPermission resource permission subject
-instance KnownPermission Object Permission Object
+-- instance KnownPermission (Object ResourceK) Permission (Object SubjectK)
 
 data Comment
   = SingleLineComment Text
@@ -73,8 +75,8 @@ data ObjectRelation = ObjectRelation
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-instance SafeCopy ObjectRelation
-
+-- instance SafeCopy ObjectRelation
+{-
 data ResourceId
   = ResourceId Text
   | Wildcard
@@ -97,24 +99,32 @@ data Subject = Subject
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 instance SafeCopy Subject
+-}
+
+data ReferenceKind
+  = Plain
+  | Wildcard
+  | SubjectRelation Text
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)  
 
 data TypeReference = TypeReference
-  { objectResource :: Resource
-  , objectRelation :: Maybe Text
+  { referenceType  :: Text
+  , referenceKind  :: ReferenceKind 
+--  , objectRelation :: Maybe Text
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-instance SafeCopy TypeReference
+-- instance SafeCopy TypeReference
 
 data PermissionExpression
   = Union        PermissionExpression PermissionExpression
   | Intersection PermissionExpression PermissionExpression
   | Exclusion    PermissionExpression PermissionExpression
   | Arrow        Relation Text
-  | Ref          TypeReference
+  | Rel          Relation
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-instance SafeCopy PermissionExpression
+-- instance SafeCopy PermissionExpression
 
 data ObjectPermission = ObjectPermission
   { opName :: Text
@@ -122,7 +132,7 @@ data ObjectPermission = ObjectPermission
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-instance SafeCopy ObjectPermission
+-- instance SafeCopy ObjectPermission
 
 -- does not preserve comments or whitespace
 --
@@ -132,7 +142,7 @@ data Definition = Definition
   , defDecls :: [ Either ObjectRelation ObjectPermission ]
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
-instance SafeCopy Definition
+-- instance SafeCopy Definition
 
 objectRelations :: Definition -> [ ObjectRelation ]
 objectRelations def = lefts (defDecls def)
@@ -142,7 +152,7 @@ data Schema = Schema
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-instance SafeCopy Schema
+-- instance SafeCopy Schema
 
 knownObjectTypes :: Schema -> [ ObjectType ]
 knownObjectTypes (Schema defs) = nub $ map (ObjectType . defName) defs
@@ -166,25 +176,31 @@ knownObjectType (Schema defs) (ObjectType ot) =
   isJust $ find (\d -> defName d == ot) defs
 
 -- * Printers
-
+{-
 ppResource :: Resource -> PP.Doc
 ppResource (Resource n mId) =
   PP.text (T.unpack n) <> (case mId of
                              Nothing -> PP.empty
                              (Just (ResourceId i)) -> PP.char ':' <> PP.text (T.unpack i))
+-}
+
+ppReferenceKind :: ReferenceKind -> PP.Doc
+ppReferenceKind Plain    = PP.empty
+ppReferenceKind Wildcard = PP.text ":*"
+ppReferenceKind (SubjectRelation rel) = PP.char '#' <> ppText rel
 
 ppTypeReference :: TypeReference -> PP.Doc
-ppTypeReference (TypeReference r mRel) =
-  ppResource r <> (case mRel of
-                     Nothing -> PP.empty
-                     (Just rel) -> PP.char '#' <> PP.text (T.unpack rel))
+ppTypeReference (TypeReference r rKind) =
+  ppText r <> ppReferenceKind rKind
+
+
 
 ppPermissionExpression :: PermissionExpression -> PP.Doc
 ppPermissionExpression (Union a b)        = ppPermissionExpression a <+> PP.char '+' <+> ppPermissionExpression b
 ppPermissionExpression (Intersection a b) = ppPermissionExpression a <+> PP.char '&' <+> ppPermissionExpression b
 ppPermissionExpression (Exclusion a b)    = ppPermissionExpression a <+> PP.char '-' <+> ppPermissionExpression b
 ppPermissionExpression (Arrow rel pr)     = ppRelation rel <> PP.text "->" <> ppText pr
-ppPermissionExpression (Ref tr)           = ppTypeReference tr
+ppPermissionExpression (Rel rel)          = ppRelation rel
 
 ppObjectPermission :: ObjectPermission -> PP.Doc
 ppObjectPermission (ObjectPermission nm exp) =
@@ -227,6 +243,7 @@ lcurlyBrace = char '{'
 rcurlyBrace :: Parser Char
 rcurlyBrace = char '}'
 
+{-
 pResourceId :: Parser ResourceId
 pResourceId =
   do char '*'
@@ -252,21 +269,41 @@ test_pResource =
   do parseTest pResource "foo"
      parseTest pResource "foo:bar"
      parseTest pResource "foo:*"
+-}
+
+pReferenceKind :: Parser ReferenceKind
+pReferenceKind =
+  do char '#'
+     t <- lexeme pName
+     sc
+     pure (SubjectRelation t)
+  <|>
+  do string ":*"
+     sc
+     pure Wildcard
+  <|>
+   do sc
+      pure Plain
 
 pTypeReference :: Parser TypeReference
 pTypeReference =
-  do r <- pResource
-     mRel <- optional $ do char '#'
-                           lexeme pName
-     pure (TypeReference r mRel)
+  do r <- pName
+     k <- pReferenceKind
+     pure (TypeReference r k)
 
 test_pTypeReference :: IO ()
 test_pTypeReference =
+  do parseTest pTypeReference "foo"
+     parseTest pTypeReference "foo:*"
+     parseTest pTypeReference "foo#rel"
+
+{-
   do parseTest pTypeReference "foo"
      parseTest pTypeReference "foo:fooid"
      parseTest pTypeReference "foo:fooid#rel"
      parseTest pTypeReference "foo:*#rel"
      parseTest pTypeReference "foo#rel"
+-}
 
 pTypeReferences :: Parser (NonEmpty TypeReference)
 pTypeReferences =
@@ -275,7 +312,7 @@ pTypeReferences =
 test_pTypeReferences :: IO ()
 test_pTypeReferences =
   do parseTest pTypeReferences "foo"
-     parseTest pTypeReferences "foo | bar:*#rel"
+     parseTest pTypeReferences "foo#rel | moo | baz#rel | bar:* | baz"
 
 pObjectRelation :: Parser ObjectRelation
 pObjectRelation =
@@ -288,18 +325,36 @@ pObjectRelation =
 
 test_pObjectRelation :: IO ()
 test_pObjectRelation =
-  do parseTest pObjectRelation "relation writer: user | user:admin#foo"
+  do parseTest pObjectRelation "relation writer: user | user:* | usergroup#member"
 
 
--- fixme: add support for parens
+pArrowExpression :: Parser PermissionExpression
+pArrowExpression =
+  do rel <- pRelation
+     string "->"
+     pr  <- pName
+     pure (Arrow rel pr)
+
+test_pArrowExpression :: IO ()
+test_pArrowExpression =
+  do parseTest pArrowExpression "foo->bar"
+
+pBaseExpression :: Parser PermissionExpression
+pBaseExpression =
+  (parens $
+    do sc
+       pPermissionExpression)
+  <|>
+    do Rel <$> lexeme pRelation
+    where
+      parens = between (symbol "(") (symbol ")")
+
+-- FIXME: it is not clear that operator precedence is correct for things like:
+-- @foo - bar & baz@
+-- should that be @(foo - bar) & baz@ or @foo- (bar & baz)@
 pPermissionExpression :: Parser PermissionExpression
 pPermissionExpression =
-  do let pArrow = try $
-           do rel <- pRelation
-              string "->"
-              pr <- pName
-              pure (Arrow rel pr)
-     a <- pArrow <|> (Ref <$> pTypeReference)
+  do a <- (try pArrowExpression) <|> pBaseExpression
      mop <- optional $ satisfy (\c -> c `elem` ("+&-" :: [Char]))
      case mop of
        Nothing -> pure a
@@ -312,9 +367,38 @@ pPermissionExpression =
               '-' -> pure $ Exclusion    a b
               _   -> error "this is not my beautiful house"
 
+
+-- fixme: add support for parens
+{-
+pPermissionExpression :: Parser PermissionExpression
+pPermissionExpression =
+  do let pArrow = try $
+           do rel <- pRelation
+              string "->"
+              pr <- pName
+              pure (Arrow rel pr)
+     a <- pArrow <|> (Rel <$> pRelation)
+     sc
+     mop <- optional $ satisfy (\c -> c `elem` ("+&-" :: [Char]))
+     case mop of
+       Nothing -> pure a
+       (Just op) ->
+         do sc
+            b <- pPermissionExpression
+            case op of
+              '+' -> pure $ Union        a b
+              '&' -> pure $ Intersection a b
+              '-' -> pure $ Exclusion    a b
+              _   -> error "this is not my beautiful house"
+-}
 test_pPermissionExpression =
   do parseTest pPermissionExpression "writer"
+     parseTest pPermissionExpression "(writer)" 
      parseTest pPermissionExpression "writer + reader"
+     parseTest pPermissionExpression "writer + (reader + commenter)"
+     parseTest pPermissionExpression "(writer - reader) + commenter)"
+     parseTest pPermissionExpression "writer - reader + commenter" -- fixme: is this actually parsed correctly?
+
 
 pObjectPermission :: Parser ObjectPermission
 pObjectPermission =
@@ -351,8 +435,8 @@ pSchema =
 test_pSchema :: IO ()
 test_pSchema =
   do let res = runParser pSchema "" (T.unlines [ "\ndefinition user {}"
-                                               , "definition user {relation writer: user\nrelation reader: user\n}"
-                                               , "definition user {relation writer: user\nrelation reader: user\n permission edit = writer\n permission view = writer + reader }\n\n"
+                                               , "definition document {relation writer: user\nrelation reader: user | user:* | usergroup#member\n}"
+                                               , "definition thing {relation writer: user\nrelation reader: user\n permission edit = writer\n permission view = writer + reader & some->arrow}\n\n"
                                                ])
      case res of
        (Right s) -> print $ ppSchema s
@@ -377,3 +461,4 @@ schema = QuasiQuoter
   , quoteType = error "schema does not yet define an type quoter"
   , quoteDec  = error "schema does not yet define a declaration quoter"
   }
+

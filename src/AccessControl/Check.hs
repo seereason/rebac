@@ -1,7 +1,9 @@
+{-# language DataKinds #-}
 {-# language DeriveDataTypeable #-}
 {-# language DeriveGeneric #-}
 {-# language OverloadedStrings #-}
 {-# language QuasiQuotes #-}
+{-# language MultiWayIf #-}
 module AccessControl.Check where
 
 import AccessControl.Relation
@@ -87,9 +89,9 @@ The expansion function seems useful for diagnostic purposes.
 -}
 check :: Map Text RelPerm
       -> [ RelationTuple ]
-      -> Object       -- ^ resource
-      -> Permission   -- ^ permission
-      -> Object       -- ^ subject
+      -> Object ResourceK  -- ^ resource
+      -> Permission        -- ^ permission
+      -> Object SubjectK   -- ^ subject -- should this really be SubjectK? that implies we are able to pass in stuff like 'user:*'
       -> Access
 check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject@(Object (ObjectType subjectType) _) =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
@@ -108,28 +110,36 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
                Nothing -> NotAllowed [ "permission " <> perm <> " not defined for resource " <> resourceTy ]
                (Just expr) -> checkExpr relationTuples expr rm
   where
+    subjectIdMatch _ SubjectWildcard = True
+    subjectIdMatch (SubjectId a) (SubjectId b) = a == b
+    subjectIdMatch a b = error $ "subjectIdMatch " ++ show (a,b)
+    isMatch (RelationTuple resourceA relationA (Object subjectTypeA subjectIdA) Nothing) (RelationTuple resourceB relationB (Object subjectTypeB subjectIdB) Nothing) =
+      (resourceA == resourceB) && (relationA == relationB) && (subjectTypeA == subjectTypeB) && (subjectIdMatch subjectIdA subjectIdB)
+
     checkExpr :: [ RelationTuple ]
               -> PermissionExpression
               -> Map Text (NonEmpty TypeReference)
               -> Access
     -- handle a simple reference
-    checkExpr relationTuples (Ref tr@(TypeReference (Resource relName Nothing) Nothing)) rm =
+--    checkExpr relationTuples (Ref tr@(TypeReference (Resource relName Nothing) Nothing)) rm =
+    checkExpr relationTuples (Rel (Relation relName)) rm =
       case Map.lookup relName rm of
         Nothing  -> NotAllowed [ "permission  " <> perm <> " refers to a relation " <> relName <> " which can not be found." ]
         (Just subjectTypes) ->
-          debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ show (ppTypeReference tr) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
+          debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ (T.unpack relName) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
           let (direct, others) = partition (hasSubjectType (ObjectType subjectType)) relationTuples
-          in if (RelationTuple resource (Relation relName) subject Nothing) `elem` direct
-               then Allowed
-               else let checkOthers reasons [] = NotAllowed reasons
+          in if | any (isMatch (RelationTuple resource (Relation relName) subject Nothing)) direct -> Allowed
+                | otherwise ->
+                    let checkOthers reasons [] = NotAllowed reasons
                         -- why would the following case happen?
                         checkOthers oldReasons ((RelationTuple res perm subj Nothing) : os) =
                           debugTrace "not sure why we are seeing this checkOthers case" $ checkOthers oldReasons os
                         checkOthers oldReasons ((RelationTuple res perm subj (Just (Relation subRelation))):os) =
-                          case check rsDefMap rsTuples subj (Permission subRelation) subject of
+                          case check rsDefMap rsTuples (toResource subj) (Permission subRelation) subject of
                             Allowed -> Allowed
                             (NotAllowed reasons) -> checkOthers (oldReasons ++ reasons) os
                     in checkOthers [] others
+
     checkExpr relationTuples (Union l r) rm =
       case checkExpr relationTuples l rm of
         Allowed -> Allowed
@@ -144,25 +154,26 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
           debugTrace ("checkExpr Arrow - \nSubjectTypes -> " ++ show ({- NonEmpty.map ppTypeReference -} subjectTypes) ++ "\n" ++ show arrowRel) $
           case subjectTypes of
             (st  :| sts) ->
-              let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ resourceType $ objectResource st)
+--              let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ resourceType $ objectResource st)
+              let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ referenceType st)
               in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
                  -- fixme: this check could be done in parallel
                  -- fixme: does it makes since to pass extraTuples here? or should they have already been filtered out?
-                 mconcat $ map (\subj -> check rsDefMap rsTuples subj (Permission permOrRel) subject) subjs
+                 mconcat $ map (\subj -> check rsDefMap rsTuples (toResource subj) (Permission permOrRel) subject) subjs
 
-lookupSubjects :: [RelationTuple] -> Object -> Relation -> [ Object ]
+lookupSubjects :: [RelationTuple] -> Object ResourceK -> Relation -> [ Object SubjectK ]
 lookupSubjects tuples res rel =
   [ subj | (RelationTuple res' rel' subj mSubRelation) <- tuples, res == res', rel == rel' ]
 
-lookupSubjectsWithType :: [RelationTuple] -> Object -> Relation -> ObjectType -> [ Object ]
+lookupSubjectsWithType :: [RelationTuple] -> Object ResourceK -> Relation -> ObjectType -> [ Object SubjectK ]
 lookupSubjectsWithType tuples res rel objectType =
   [ subj | (RelationTuple res' rel' subj@(Object objectType' _) mSubRelation) <- tuples, res == res', rel == rel', objectType == objectType' ]
 
-
+{-
 -- * Permission Tree
 
 data SubjectReference = SubjectReference
-  { subjectObject  :: Object
+  { subjectObject  :: Object SubjectK
   , subjectRelation :: Maybe Relation
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
@@ -180,13 +191,13 @@ data AlgebraicSubjectSet = AlgebraicSubjectSet
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
 
 data PermissionTree = PermissionTree
-  { expandedObject   :: Object
+  { expandedObject   :: Object k
   , expandedRelation :: Either Relation Permission
   , expandedSubject  :: Either (Set SubjectReference) ()
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
 
-{-
+
 -- find the permission tree for all the subjects of a resource
 expandPermissionTree :: RelationState -> Object -> Either Relation Permission -> PermissionTree
 expandPermissionTree rs resource relOrPerm =

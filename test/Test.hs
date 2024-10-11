@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveGeneric, GeneralizedNewtypeDeriving, OverloadedStrings, QuasiQuotes #-}
+{-# LANGUAGE DataKinds, DeriveGeneric, GeneralizedNewtypeDeriving, OverloadedStrings, QuasiQuotes #-}
 
 module Main (main) where
 
@@ -29,7 +29,7 @@ schema1 =
         relation org: organization
 
         relation owner: user
-        relation reader: user
+        relation reader: user | user:*
 
         permission edit = owner
         permission view = reader + owner + org->can_admin
@@ -45,23 +45,27 @@ rels1 =
     document:somedocument#owner@user:jill                  # Jill is the owner of somedocument
     organization:theorg#admin@user:hannah                  # Hannah is the admin of the organization
     document:somedocument#org@organization:theorg          # `theorg` is the organization for the document
+    document:publicdoc#reader@user:*                       # a publicly readable document
   |]
 
 -- some resources
 
-somedocument :: Object
-somedocument = Object (ObjectType "document") (ObjectId "somedocument")
+somedocument :: Object ResourceK
+somedocument = Object (ObjectType "document") (ResourceId "somedocument")
+
+publicdoc :: Object ResourceK
+publicdoc = Object (ObjectType "document") (ResourceId "publicdoc")
 
 -- some users
 
-sean :: Object
-sean = Object (ObjectType "user") (ObjectId "sean")
+sean :: Object SubjectK
+sean = Object (ObjectType "user") (SubjectId "sean")
 
-fred :: Object
-fred = Object (ObjectType "user") (ObjectId "fred")
+fred :: Object SubjectK
+fred = Object (ObjectType "user") (SubjectId "fred")
 
-jill :: Object
-jill = Object (ObjectType "user") (ObjectId "jill")
+jill :: Object SubjectK
+jill = Object (ObjectType "user") (SubjectId "jill")
 
 reader :: Relation
 reader = Relation "reader"
@@ -69,11 +73,11 @@ reader = Relation "reader"
 owner :: Relation
 owner = Relation "owner"
 
-bob :: Object
-bob = [object| user:bob |]
+bob :: Object SubjectK
+bob = [subj| user:bob |]
 
-hannah :: Object
-hannah = [object| user:hannah |]
+hannah :: Object SubjectK
+hannah = [subj| user:hannah |]
 
 -- some relation names
 
@@ -87,18 +91,27 @@ t1 =
   do putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject bob)
      print $ check defMap1 rels1 somedocument view bob
+     putStrLn $ "expected: NotAllowed - not an owner, reader, or admin"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject hannah)
      print $ check defMap1 rels1 somedocument view hannah
+     putStrLn $ "expected: Allowed - hannah is an admin"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, edit, ppObject jill)
      print $ check defMap1 rels1 somedocument edit jill
+     putStrLn $ "expected: Allowed - jill is the owner"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, edit, ppObject sean)
      print $ check defMap1 rels1 somedocument edit sean
+     putStrLn $ "expected: NotAllowed - sean is not the owner or an admin"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject sean)
      print $ check defMap1 rels1 somedocument view sean
+     putStrLn $ "expected: Allowed - sean is a reader"
+     putStrLn "-----------------------------------------------------"
+     print $ (ppObject publicdoc, view, ppObject sean)
+     print $ check defMap1 rels1 publicdoc view sean
+     putStrLn $ "expected: Allowed - the document should be readable by everyone"
 
 
 schema2 =
