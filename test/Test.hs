@@ -50,22 +50,22 @@ rels1 =
 
 -- some resources
 
-somedocument :: Object ResourceK
-somedocument = Object (ObjectType "document") (ResourceId "somedocument")
+somedocument :: Object NoWildcard
+somedocument = Object (ObjectType "document") (ObjectId "somedocument")
 
-publicdoc :: Object ResourceK
-publicdoc = Object (ObjectType "document") (ResourceId "publicdoc")
+publicdoc :: Object NoWildcard
+publicdoc = Object (ObjectType "document") (ObjectId "publicdoc")
 
 -- some users
 
-sean :: Object SubjectK
-sean = Object (ObjectType "user") (SubjectId "sean")
+sean :: Object NoWildcard
+sean = Object (ObjectType "user") (ObjectId "sean")
 
-fred :: Object SubjectK
-fred = Object (ObjectType "user") (SubjectId "fred")
+fred :: Object NoWildcard
+fred = Object (ObjectType "user") (ObjectId "fred")
 
-jill :: Object SubjectK
-jill = Object (ObjectType "user") (SubjectId "jill")
+jill :: Object NoWildcard
+jill = Object (ObjectType "user") (ObjectId "jill")
 
 reader :: Relation
 reader = Relation "reader"
@@ -73,11 +73,11 @@ reader = Relation "reader"
 owner :: Relation
 owner = Relation "owner"
 
-bob :: Object SubjectK
-bob = [subj| user:bob |]
+bob :: Object NoWildcard
+bob = [object| user:bob |]
 
-hannah :: Object SubjectK
-hannah = [subj| user:hannah |]
+hannah :: Object NoWildcard
+hannah = [object| user:hannah |]
 
 -- some relation names
 
@@ -111,7 +111,7 @@ t1 =
      putStrLn "-----------------------------------------------------"
      print $ (ppObject publicdoc, view, ppObject sean)
      print $ check defMap1 rels1 publicdoc view sean
-     putStrLn $ "expected: Allowed - the document should be readable by everyone"
+     putStrLn $ "expected: Allowed - the publicdoc should be readable by everyone"
 
 
 schema2 =

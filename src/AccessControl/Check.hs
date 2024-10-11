@@ -15,6 +15,7 @@ import Data.Either (partitionEithers)
 import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import Data.Maybe (mapMaybe)
 import Data.SafeCopy (SafeCopy)
 import           Data.Set (Set)
 import qualified Data.Set as Set
@@ -89,9 +90,9 @@ The expansion function seems useful for diagnostic purposes.
 -}
 check :: Map Text RelPerm
       -> [ RelationTuple ]
-      -> Object ResourceK  -- ^ resource
-      -> Permission        -- ^ permission
-      -> Object SubjectK   -- ^ subject -- should this really be SubjectK? that implies we are able to pass in stuff like 'user:*'
+      -> Object NoWildcard  -- ^ resource
+      -> Permission         -- ^ permission
+      -> Object NoWildcard  -- ^ subject
       -> Access
 check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject@(Object (ObjectType subjectType) _) =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
@@ -110,10 +111,13 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
                Nothing -> NotAllowed [ "permission " <> perm <> " not defined for resource " <> resourceTy ]
                (Just expr) -> checkExpr relationTuples expr rm
   where
-    subjectIdMatch _ SubjectWildcard = True
-    subjectIdMatch (SubjectId a) (SubjectId b) = a == b
+    subjectIdMatch :: ObjectId -> WildcardObjectId -> Bool
+    subjectIdMatch _ Wildcard = True
+    subjectIdMatch (ObjectId a) (Specific (ObjectId b)) = a == b
     subjectIdMatch a b = error $ "subjectIdMatch " ++ show (a,b)
-    isMatch (RelationTuple resourceA relationA (Object subjectTypeA subjectIdA) Nothing) (RelationTuple resourceB relationB (Object subjectTypeB subjectIdB) Nothing) =
+
+    isMatch :: Object NoWildcard -> Relation -> Object NoWildcard -> RelationTuple -> Bool
+    isMatch resourceA relationA (Object subjectTypeA subjectIdA) (RelationTuple resourceB relationB (Object subjectTypeB subjectIdB) Nothing) =
       (resourceA == resourceB) && (relationA == relationB) && (subjectTypeA == subjectTypeB) && (subjectIdMatch subjectIdA subjectIdB)
 
     checkExpr :: [ RelationTuple ]
@@ -128,14 +132,16 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
         (Just subjectTypes) ->
           debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ (T.unpack relName) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
           let (direct, others) = partition (hasSubjectType (ObjectType subjectType)) relationTuples
-          in if | any (isMatch (RelationTuple resource (Relation relName) subject Nothing)) direct -> Allowed
+          in if | any (isMatch resource (Relation relName) subject) direct -> Allowed
                 | otherwise ->
                     let checkOthers reasons [] = NotAllowed reasons
                         -- why would the following case happen?
                         checkOthers oldReasons ((RelationTuple res perm subj Nothing) : os) =
                           debugTrace "not sure why we are seeing this checkOthers case" $ checkOthers oldReasons os
-                        checkOthers oldReasons ((RelationTuple res perm subj (Just (Relation subRelation))):os) =
-                          case check rsDefMap rsTuples (toResource subj) (Permission subRelation) subject of
+                        checkOthers oldReasons ((RelationTuple res perm subj@(Object _ Wildcard)  (Just (Relation subRelation))):os) =
+                          debugTrace "not sure how to handle wilcards here" $ checkOthers oldReasons os
+                        checkOthers oldReasons ((RelationTuple res perm subj@(Object ot (Specific oi))  (Just (Relation subRelation))):os) =
+                          case check rsDefMap rsTuples (Object ot oi) (Permission subRelation) subject of
                             Allowed -> Allowed
                             (NotAllowed reasons) -> checkOthers (oldReasons ++ reasons) os
                     in checkOthers [] others
@@ -155,17 +161,18 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
           case subjectTypes of
             (st  :| sts) ->
 --              let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ resourceType $ objectResource st)
-              let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ referenceType st)
+              let subjs' = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ referenceType st)
+                  subjs = mapMaybe toNoWildcard subjs'
               in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
                  -- fixme: this check could be done in parallel
                  -- fixme: does it makes since to pass extraTuples here? or should they have already been filtered out?
-                 mconcat $ map (\subj -> check rsDefMap rsTuples (toResource subj) (Permission permOrRel) subject) subjs
+                 mconcat $ map (\subj -> check rsDefMap rsTuples subj (Permission permOrRel) subject) subjs
 
-lookupSubjects :: [RelationTuple] -> Object ResourceK -> Relation -> [ Object SubjectK ]
+lookupSubjects :: [ RelationTuple ] -> Object NoWildcard -> Relation -> [ Object AllowWildcard ]
 lookupSubjects tuples res rel =
   [ subj | (RelationTuple res' rel' subj mSubRelation) <- tuples, res == res', rel == rel' ]
 
-lookupSubjectsWithType :: [RelationTuple] -> Object ResourceK -> Relation -> ObjectType -> [ Object SubjectK ]
+lookupSubjectsWithType :: [RelationTuple] -> Object NoWildcard -> Relation -> ObjectType -> [ Object AllowWildcard ]
 lookupSubjectsWithType tuples res rel objectType =
   [ subj | (RelationTuple res' rel' subj@(Object objectType' _) mSubRelation) <- tuples, res == res', rel == rel', objectType == objectType' ]
 

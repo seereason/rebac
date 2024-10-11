@@ -86,6 +86,40 @@ ppRelation (Relation r) = ppText r
 pRelation :: Parser Relation
 pRelation = Relation <$> pName
 
+-- * ObjectWildcard
+
+-- | used to track if an ObjectId can be a wildcard or not
+data ObjectWildcard
+  = AllowWildcard
+  | NoWildcard
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy ObjectWildcard where version = 1 ; kind = base
+
+data WildcardObjectId
+  = Specific ObjectId
+  | Wildcard
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy WildcardObjectId where version = 1 ; kind = base
+
+type family ToObjectId (a :: ObjectWildcard) where
+            ToObjectId NoWildcard    = ObjectId
+            ToObjectId AllowWildcard = WildcardObjectId
+
+class KnownObjectWildcard (knd :: ObjectWildcard) where
+  knownObjectWildcard :: proxy knd -> ObjectWildcard
+
+instance KnownObjectWildcard AllowWildcard where
+  knownObjectWildcard _ = AllowWildcard
+
+instance KnownObjectWildcard NoWildcard where
+  knownObjectWildcard _ = NoWildcard
+
+toNoWildcard :: Object AllowWildcard -> Maybe (Object NoWildcard)
+toNoWildcard (Object ot (Specific oi)) = Just (Object ot oi)
+toNoWildcard (Object ot Wildcard)      = Nothing
+
 -- * ObjectType
 
 newtype ObjectType = ObjectType { unObjectType :: Text }
@@ -99,108 +133,100 @@ ppObjectType (ObjectType ty) = ppText ty
 pObjectType :: Parser ObjectType
 pObjectType = ObjectType <$> pName
 
--- * SubjectId / ResourceId
+-- * ObjectId
 
 -- An `SubjectId` identifies an subject within an `ObjectType` namespace
-data SubjectId
-  = SubjectId { unSubjectId :: Text }
-  | SubjectWildcard
+newtype ObjectId
+  = ObjectId { unObjectId :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-instance SafeCopy SubjectId where version = 1 ; kind = base
+instance SafeCopy ObjectId where version = 1 ; kind = base
 
+-- ppObjectId :: ObjectId -> Doc
+-- ppObjectId (ObjectId i) = ppText i
+
+-- pObjectId :: Parser ObjectId
+-- pObjectId = ObjectId <$> pName
+
+{-
 -- An `ResourceId` identifies an resource within an `ObjectType` namespace
 data ResourceId = ResourceId { unResourceId :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 instance SafeCopy ResourceId where version = 1 ; kind = base
-
+-}
 class PpObjectId a where
   ppObjectId :: a -> Doc
 
-instance PpObjectId SubjectId where
-  ppObjectId (SubjectId i) = ppText i
-  ppObjectId SubjectWildcard = PP.char '*'
+instance PpObjectId WildcardObjectId where
+  ppObjectId (Specific i) = ppObjectId i
+  ppObjectId Wildcard = PP.char '*'
 
-instance PpObjectId ResourceId where
-  ppObjectId (ResourceId i) = ppText i
+instance PpObjectId ObjectId where
+  ppObjectId (ObjectId i) = ppText i
 
-class PObjectId (knd :: ObjectKind) where
-  pObjectId :: forall (proxy :: ObjectKind -> *). proxy knd  -> Parser (ToObjectId knd)
+class PObjectId (knd :: ObjectWildcard) where
+  pObjectId :: forall (proxy :: ObjectWildcard -> *). proxy knd  -> Parser (ToObjectId knd)
 
-instance PObjectId SubjectK where
+instance PObjectId AllowWildcard where
   pObjectId _ =
     do char '*'
-       pure SubjectWildcard
+       pure Wildcard
     <|>
-       SubjectId <$> pName
+       Specific <$> pObjectId (Proxy :: Proxy NoWildcard)
 
-instance PObjectId ResourceK where
+instance PObjectId NoWildcard where
   pObjectId p =
-       ResourceId <$> pName
+       ObjectId <$> pName
 
 -- * Object
-
-data ObjectKind
-  = SubjectK
-  | ResourceK
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
-
-instance SafeCopy ObjectKind where version = 1 ; kind = base
-
-type family ToObjectId (a :: ObjectKind) where
-            ToObjectId SubjectK  = SubjectId
-            ToObjectId ResourceK = ResourceId
-
-class KnownObjectKind (knd :: ObjectKind) where
-  knownObjectKind :: proxy knd -> ObjectKind
-
-instance KnownObjectKind SubjectK where
-  knownObjectKind _ = SubjectK
-
-instance KnownObjectKind ResourceK where
-  knownObjectKind _ = ResourceK
 
 -- | An 'Object' has an 'ObjectType' and 'ObjectId'.
 --
 -- An 'Object' identifies a resource or subject.
 --
 -- The 'ObjectId' is unique for an particular 'ObjectType' but not across all 'ObjectTypes'.
-data Object (knd :: ObjectKind) = Object
+data Object (knd :: ObjectWildcard) = Object
   { objectType :: ObjectType
   , objectId   :: ToObjectId knd
   }
 --  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
-deriving instance Eq (Object SubjectK)
-deriving instance Eq (Object ResourceK)
-deriving instance Ord (Object SubjectK)
-deriving instance Ord (Object ResourceK)
-deriving instance Read (Object SubjectK)
-deriving instance Read (Object ResourceK)
-deriving instance Show (Object SubjectK)
-deriving instance Show (Object ResourceK)
-deriving instance Data (Object SubjectK)
-deriving instance Data (Object ResourceK)
-deriving instance Typeable (Object SubjectK)
-deriving instance Typeable (Object ResourceK)
-deriving instance Generic (Object SubjectK)
-deriving instance Generic (Object ResourceK)
-deriving instance Lift (Object SubjectK)
-deriving instance Lift (Object ResourceK)
+deriving instance Eq (Object AllowWildcard)
+deriving instance Eq (Object NoWildcard)
+deriving instance Ord (Object AllowWildcard)
+deriving instance Ord (Object NoWildcard)
+deriving instance Read (Object AllowWildcard)
+deriving instance Read (Object NoWildcard)
+deriving instance Show (Object AllowWildcard)
+deriving instance Show (Object NoWildcard)
+deriving instance Data (Object AllowWildcard)
+deriving instance Data (Object NoWildcard)
+deriving instance Typeable (Object AllowWildcard)
+deriving instance Typeable (Object NoWildcard)
+deriving instance Generic (Object AllowWildcard)
+deriving instance Generic (Object NoWildcard)
+deriving instance Lift (Object AllowWildcard)
+deriving instance Lift (Object NoWildcard)
 
 
-instance SafeCopy (Object SubjectK)  where version = 1 ; kind = base
-instance SafeCopy (Object ResourceK) where version = 1 ; kind = base
+instance SafeCopy (Object AllowWildcard)  where version = 1 ; kind = base
+instance SafeCopy (Object NoWildcard) where version = 1 ; kind = base
 
 class ToObject a where
-  toObjectType   :: a -> ObjectType
-  toObjectIdText :: a -> Text
+--   toObjectType   :: a -> ObjectType
+--  toObjectIdText :: a -> Text
+  toObject       :: a -> Object NoWildcard
+--  toObject a = Object (toObjectType a) (ObjectId (toObjectIdText a))
+{- 
   toSubject :: a -> Object SubjectK
   toSubject a = Object (toObjectType a) (SubjectId (toObjectIdText a))
-  toResource :: a -> Object ResourceK
+  toResource :: a -> Object NoWildcard
   toResource a = Object (toObjectType a) (ResourceId (toObjectIdText a))
-
+-}
+instance ToObject (Object NoWildcard) where
+  toObject o = o
+{-
 instance ToObject (Object SubjectK) where
   toObjectType (Object ot _) = ot
   toObjectIdText (Object _ oi) =
@@ -212,33 +238,33 @@ instance ToObject (Object SubjectK) where
     case oi of
       SubjectWildcard -> error "cannot cast to ResourceId"
       SubjectId i -> Object ot (ResourceId i)
-
-ppObject :: (PpObjectId (ToObjectId knd)) => Object (knd :: ObjectKind) -> Doc
+-}
+ppObject :: (PpObjectId (ToObjectId knd)) => Object (knd :: ObjectWildcard) -> Doc
 ppObject (Object ot oi) =
   ppObjectType ot <> PP.char ':' <> ppObjectId oi
 
 
-pObject :: (PObjectId knd) => proxy (knd :: ObjectKind) -> Parser (Object (knd :: ObjectKind))
-pObject p =
+pObject' :: (PObjectId knd) => proxy (knd :: ObjectWildcard) -> Parser (Object knd)
+pObject' p =
   do ot <- pObjectType
      char ':'
      oi <- pObjectId p
      pure $ Object ot oi
 
-pSubject :: Parser (Object SubjectK)
-pSubject = pObject Proxy
+pObject :: Parser (Object NoWildcard)
+pObject = pObject' Proxy
 
-pResource :: Parser (Object ResourceK)
-pResource = pObject Proxy
+pObjectWild :: Parser (Object AllowWildcard)
+pObjectWild = pObject' Proxy
 
-{-
+
 -- * RelationTuple
--}
+
 -- | Define a relationship between a 'resource' and 'subject'
 data RelationTuple = RelationTuple
-  { resource        :: Object ResourceK
+  { resource        :: Object NoWildcard
   , relation        :: Relation
-  , subject         :: Object SubjectK
+  , subject         :: Object AllowWildcard
   , subjectRelation :: Maybe Relation
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
@@ -263,11 +289,11 @@ ppRelationTuples rt =
 
 pRelationTuple :: Parser RelationTuple
 pRelationTuple =
-  do res <- pResource
+  do res <- pObject
      char '#'
      rel <- pRelation
      char '@'
-     subj <- pSubject
+     subj <- pObjectWild
      mSubRelation <- optional $
        do char '#'
           pRelation
@@ -283,10 +309,10 @@ pRelationTuples =
 hasSubjectType :: ObjectType -> RelationTuple -> Bool
 hasSubjectType st' (RelationTuple _ _ (Object st _) _) = st == st'
 
-hasSubject :: Object SubjectK -> RelationTuple -> Bool
+hasSubject :: Object AllowWildcard -> RelationTuple -> Bool
 hasSubject subj (RelationTuple _ _ subj' _) = subj == subj'
 
-hasResource :: Object ResourceK -> RelationTuple -> Bool
+hasResource :: Object NoWildcard -> RelationTuple -> Bool
 hasResource res (RelationTuple res' _ _ _) = res == res'
 
 hasRelation :: Relation -> RelationTuple -> Bool
@@ -294,23 +320,23 @@ hasRelation rel (RelationTuple _ rel' _ _) = rel == rel'
 
 -- * QuasiQuoters
 
-objectExpr :: (PObjectId knd, Lift (Object knd)) => proxy (knd :: ObjectKind) -> String -> Q Exp
+objectExpr :: (PObjectId knd, Lift (Object knd)) => proxy (knd :: ObjectWildcard) -> String -> Q Exp
 objectExpr p s =
-  case runParser (sc *> pObject p) s (T.pack s) of
+  case runParser (sc *> pObject' p) s (T.pack s) of
     (Left e) -> error (errorBundlePretty e)
     (Right p) -> lift p
 
-subj :: QuasiQuoter
-subj = QuasiQuoter
-  { quoteExp  = objectExpr (Proxy :: Proxy SubjectK)
+object :: QuasiQuoter
+object = QuasiQuoter
+  { quoteExp  = objectExpr (Proxy :: Proxy NoWildcard)
   , quotePat  = error "subj does not yet define an pattern quoter"
   , quoteType = error "subj does not yet define an type quoter"
   , quoteDec  = error "subj does not yet define a declaration quoter"
   }
 
-res :: QuasiQuoter
-res = QuasiQuoter
-  { quoteExp  = objectExpr (Proxy :: Proxy ResourceK)
+objectW :: QuasiQuoter
+objectW = QuasiQuoter
+  { quoteExp  = objectExpr (Proxy :: Proxy AllowWildcard)
   , quotePat  = error "res does not yet define an pattern quoter"
   , quoteType = error "res does not yet define an type quoter"
   , quoteDec  = error "res does not yet define a declaration quoter"
@@ -345,12 +371,9 @@ rels = QuasiQuoter
   }
 
 instance ToObject UserId where
-  toObjectType (UserId n)   = ObjectType "user"
-  toObjectIdText (UserId n) = T.pack $ show n
+  toObject (UserId n)   = Object (ObjectType "user") (ObjectId (T.pack $ show n))
 
 instance ToObject (Maybe UserId) where
-  toObjectType _ = ObjectType "user"
-  toObjectIdText (Just (UserId n)) = T.pack $ show n
-  toObjectIdText Nothing           = "anonymous"
-
+  toObject (Just (UserId n)) = Object (ObjectType "user") (ObjectId (T.pack $ show n))
+  toObject Nothing           = Object (ObjectType "user") (ObjectId "anonymous")
 

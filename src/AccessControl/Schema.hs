@@ -8,7 +8,7 @@
 {-# language StandaloneDeriving #-}
 module AccessControl.Schema where
 
-import AccessControl.Relation (Object(..), ObjectKind(..), ObjectType(..), Relation(..), ToObject(..), pName, pRelation, ppRelation, ppText, sc, scnl)
+import AccessControl.Relation (Object(..), ObjectWildcard(..), ObjectType(..), Relation(..), ToObject(..), pName, pRelation, ppRelation, ppText, sc, scnl)
 import Data.Data (Data)
 import Data.Either (lefts, rights)
 import Data.SafeCopy (SafeCopy)
@@ -103,7 +103,7 @@ instance SafeCopy Subject
 
 data ReferenceKind
   = Plain
-  | Wildcard
+  | SubjectWildcard
   | SubjectRelation Text
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)  
 
@@ -185,8 +185,8 @@ ppResource (Resource n mId) =
 -}
 
 ppReferenceKind :: ReferenceKind -> PP.Doc
-ppReferenceKind Plain    = PP.empty
-ppReferenceKind Wildcard = PP.text ":*"
+ppReferenceKind Plain           = PP.empty
+ppReferenceKind SubjectWildcard = PP.text ":*"
 ppReferenceKind (SubjectRelation rel) = PP.char '#' <> ppText rel
 
 ppTypeReference :: TypeReference -> PP.Doc
@@ -280,7 +280,7 @@ pReferenceKind =
   <|>
   do string ":*"
      sc
-     pure Wildcard
+     pure SubjectWildcard
   <|>
    do sc
       pure Plain
