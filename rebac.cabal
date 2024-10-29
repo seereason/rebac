@@ -13,10 +13,9 @@ author:              Jeremy Shaw
 maintainer:          jeremy@seereason.com
 -- copyright:
 category:            Web
-extra-source-files:  CHANGELOG.md
+extra-source-files:  CHANGELOG.md rebac.el
 
 library
--- AccessControl.Acid
   exposed-modules:
                        AccessControl.Check
                        AccessControl.Relation
