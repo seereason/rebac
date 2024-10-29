@@ -31,6 +31,7 @@ library
                        safecopy,
                        text ^>=1.2,
                        template-haskell,
+                       th-lift-instances,
                        userid
   hs-source-dirs:      src
   default-language:    Haskell2010

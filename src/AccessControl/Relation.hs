@@ -22,6 +22,7 @@ import Data.Typeable (Typeable)
 import Data.UserId (UserId(..))
 import Data.Void (Void)
 import GHC.Generics
+import Instances.TH.Lift () -- Lift Text instance
 import Language.Haskell.TH
 import Language.Haskell.TH.Quote
 import Language.Haskell.TH.Syntax
@@ -35,10 +36,6 @@ import qualified Text.Megaparsec.Char.Lexer as L -- (1)
 -- import AccessControl.Schema (ObjectType(..),sc, scnl) -- for Lift Text instance
 
 -- FIXME: how does string escaping work?
-
-
-instance Lift Text where
-  lift t = lift (T.unpack t)
 
 
 type Parser = Parsec Void Text
@@ -119,6 +116,9 @@ instance KnownObjectWildcard NoWildcard where
 toNoWildcard :: Object AllowWildcard -> Maybe (Object NoWildcard)
 toNoWildcard (Object ot (Specific oi)) = Just (Object ot oi)
 toNoWildcard (Object ot Wildcard)      = Nothing
+
+toWildcard :: Object NoWildcard -> Object AllowWildcard
+toWildcard (Object ot oi) = Object ot (Specific oi)
 
 -- * ObjectType
 
@@ -257,6 +257,13 @@ pObject = pObject' Proxy
 pObjectWild :: Parser (Object AllowWildcard)
 pObjectWild = pObject' Proxy
 
+instance ToObject UserId where
+  toObject (UserId n)   = Object (ObjectType "user") (ObjectId (T.pack $ show n))
+
+instance ToObject (Maybe UserId) where
+  toObject (Just (UserId n)) = Object (ObjectType "user") (ObjectId (T.pack $ show n))
+  toObject Nothing           = Object (ObjectType "user") (ObjectId "anonymous")
+
 
 -- * RelationTuple
 
@@ -369,11 +376,4 @@ rels = QuasiQuoter
   , quoteType = error "rels does not yet define an type quoter"
   , quoteDec  = error "rels does not yet define a declaration quoter"
   }
-
-instance ToObject UserId where
-  toObject (UserId n)   = Object (ObjectType "user") (ObjectId (T.pack $ show n))
-
-instance ToObject (Maybe UserId) where
-  toObject (Just (UserId n)) = Object (ObjectType "user") (ObjectId (T.pack $ show n))
-  toObject Nothing           = Object (ObjectType "user") (ObjectId "anonymous")
 

@@ -19,6 +19,7 @@ import Data.Maybe (catMaybes, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Typeable (Typeable)
+import Data.UserId (UserId(..))
 import Data.Void (Void)
 import GHC.Generics
 import Language.Haskell.TH
@@ -32,11 +33,6 @@ import Text.Megaparsec.Error
 import Text.PrettyPrint.HughesPJ ((<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Text.Megaparsec.Char.Lexer as L -- (1)
-
--- instance (Lift a) => Lift (NonEmpty a) where
---  lift _ = undefined
-
-deriving instance (Lift a) => Lift (NonEmpty a)
 
 -- * Permission
 
@@ -61,8 +57,13 @@ ppPermissionRelation :: Either Permission Relation -> PP.Doc
 ppPermissionRelation (Left p)  = ppPermission p
 ppPermisisonRelation (Right r) = ppRelation r
 
+
+
 class (ToObject resource, ToPermission permission, ToObject subject) => KnownPermission resource permission subject
 -- instance KnownPermission (Object ResourceK) Permission (Object SubjectK)
+
+instance KnownPermission (Object NoWildcard) Permission UserId
+instance KnownPermission (Object NoWildcard) Permission (Maybe UserId)
 
 data Comment
   = SingleLineComment Text
@@ -462,3 +463,13 @@ schema = QuasiQuoter
   , quoteDec  = error "schema does not yet define a declaration quoter"
   }
 
+
+{-
+Implement a function that verifies that the schema is valid.
+
+For example, if the permission uses an arrow, then the relation to the left of the arrow can not have a wilcard on its RHS.
+
+Also, it should check that every object referenced by a permission is defined, etc.
+-}
+validateSchema :: Schema -> [ Text ]
+validateSchema s = []

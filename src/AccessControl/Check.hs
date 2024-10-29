@@ -114,7 +114,7 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
     subjectIdMatch :: ObjectId -> WildcardObjectId -> Bool
     subjectIdMatch _ Wildcard = True
     subjectIdMatch (ObjectId a) (Specific (ObjectId b)) = a == b
-    subjectIdMatch a b = error $ "subjectIdMatch " ++ show (a,b)
+--    subjectIdMatch a b = error $ "subjectIdMatch " ++ show (a,b)
 
     isMatch :: Object NoWildcard -> Relation -> Object NoWildcard -> RelationTuple -> Bool
     isMatch resourceA relationA (Object subjectTypeA subjectIdA) (RelationTuple resourceB relationB (Object subjectTypeB subjectIdB) Nothing) =
