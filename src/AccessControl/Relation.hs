@@ -12,6 +12,7 @@ module AccessControl.Relation where
 
 -- import AccessControl.Schema (Permission(..), Relation(..), ToPermission(..), ToRelation(..), pName, pRelation, ppRelation, pObjectType, ppObjectType, ppText)
 import Data.Data (Data)
+import Data.Either (either)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Proxy (Proxy(..))
@@ -305,6 +306,13 @@ pRelationTuple =
        do char '#'
           pRelation
      pure $ RelationTuple res rel subj mSubRelation
+
+-- alas, `mapLeft` would be nice here, but I am not adding a dependency just for that
+parseRelationTuple :: Text -> Either String RelationTuple
+parseRelationTuple t =
+  case runParser pRelationTuple "" t of
+    Left e   -> Left $ errorBundlePretty e
+    Right rt -> Right rt
 
 pRelationTuples :: Parser [ RelationTuple ]
 pRelationTuples =
