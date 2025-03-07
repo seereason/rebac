@@ -15,6 +15,7 @@ import Data.Either (partitionEithers)
 import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import           Data.Map (Map)
 import Data.Maybe (mapMaybe)
 import Data.SafeCopy (SafeCopy)
 import           Data.Set (Set)
@@ -97,7 +98,7 @@ check :: Map Text RelPerm
 check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject@(Object (ObjectType subjectType) _) =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
-  case filter (\(RelationTuple resource' _ _ _) -> resource == resource') rsTuples of
+  case filter (\(RelationTuple resource' _ _ _ _) -> resource == resource') rsTuples of
     [] -> debugTrace ("## rsTuples = " ++ show (ppRelationTuples rsTuples)) $
           NotAllowed [ "no tuples for resource located - resource: "  <> (T.pack $ show $ ppObject resource) ]
     relationTuples ->
@@ -117,7 +118,7 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
 --    subjectIdMatch a b = error $ "subjectIdMatch " ++ show (a,b)
 
     isMatch :: Object NoWildcard -> Relation -> Object NoWildcard -> RelationTuple -> Bool
-    isMatch resourceA relationA (Object subjectTypeA subjectIdA) (RelationTuple resourceB relationB (Object subjectTypeB subjectIdB) Nothing) =
+    isMatch resourceA relationA (Object subjectTypeA subjectIdA) (RelationTuple resourceB relationB (Object subjectTypeB subjectIdB) Nothing _mTag) =
       (resourceA == resourceB) && (relationA == relationB) && (subjectTypeA == subjectTypeB) && (subjectIdMatch subjectIdA subjectIdB)
 
     checkExpr :: [ RelationTuple ]
@@ -136,11 +137,11 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
                 | otherwise ->
                     let checkOthers reasons [] = NotAllowed reasons
                         -- why would the following case happen?
-                        checkOthers oldReasons ((RelationTuple res perm subj Nothing) : os) =
+                        checkOthers oldReasons ((RelationTuple res perm subj Nothing _mTag) : os) =
                           debugTrace "not sure why we are seeing this checkOthers case" $ checkOthers oldReasons os
-                        checkOthers oldReasons ((RelationTuple res perm subj@(Object _ Wildcard)  (Just (Relation subRelation))):os) =
+                        checkOthers oldReasons ((RelationTuple res perm subj@(Object _ Wildcard) (Just (Relation subRelation)) _mTag):os) =
                           debugTrace "not sure how to handle wilcards here" $ checkOthers oldReasons os
-                        checkOthers oldReasons ((RelationTuple res perm subj@(Object ot (Specific oi))  (Just (Relation subRelation))):os) =
+                        checkOthers oldReasons ((RelationTuple res perm subj@(Object ot (Specific oi))  (Just (Relation subRelation)) _mTag):os) =
                           case check rsDefMap rsTuples (Object ot oi) (Permission subRelation) subject of
                             Allowed -> Allowed
                             (NotAllowed reasons) -> checkOthers (oldReasons ++ reasons) os
@@ -170,11 +171,11 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
 
 lookupSubjects :: [ RelationTuple ] -> Object NoWildcard -> Relation -> [ Object AllowWildcard ]
 lookupSubjects tuples res rel =
-  [ subj | (RelationTuple res' rel' subj mSubRelation) <- tuples, res == res', rel == rel' ]
+  [ subj | (RelationTuple res' rel' subj mSubRelation _mTag) <- tuples, res == res', rel == rel' ]
 
 lookupSubjectsWithType :: [RelationTuple] -> Object NoWildcard -> Relation -> ObjectType -> [ Object AllowWildcard ]
 lookupSubjectsWithType tuples res rel objectType =
-  [ subj | (RelationTuple res' rel' subj@(Object objectType' _) mSubRelation) <- tuples, res == res', rel == rel', objectType == objectType' ]
+  [ subj | (RelationTuple res' rel' subj@(Object objectType' _) mSubRelation _mTag) <- tuples, res == res', rel == rel', objectType == objectType' ]
 
 {-
 -- * Permission Tree

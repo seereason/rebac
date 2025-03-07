@@ -30,9 +30,9 @@ import Language.Haskell.TH.Syntax
 import Language.Haskell.TH.Lib (tupleT)
 import Text.Megaparsec
 import Text.Megaparsec.Char
+import qualified Text.Megaparsec.Char.Lexer as L
 import Text.PrettyPrint.HughesPJ (Doc, (<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
-import qualified Text.Megaparsec.Char.Lexer as L -- (1)
 
 -- import AccessControl.Schema (ObjectType(..),sc, scnl) -- for Lift Text instance
 
@@ -268,12 +268,18 @@ instance ToObject (Maybe UserId) where
 
 -- * RelationTuple
 
+newtype Tag = Tag { unTag :: Text }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy Tag where version = 1 ; kind = base
+
 -- | Define a relationship between a 'resource' and 'subject'
 data RelationTuple = RelationTuple
   { resource        :: Object NoWildcard
   , relation        :: Relation
   , subject         :: Object AllowWildcard
   , subjectRelation :: Maybe Relation
+  , tag             :: Maybe Tag
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
@@ -288,8 +294,19 @@ ppMaybeRelation Nothing = PP.empty
 ppMaybeRelation (Just rel) = PP.char '#' <> ppRelation rel
 
 ppRelationTuple :: RelationTuple -> Doc
-ppRelationTuple (RelationTuple res rel subj mSubRelation) =
-  ppObject res <> PP.char '#' <> ppRelation rel <> PP.char '@' <> ppObject subj <> ppMaybeRelation mSubRelation
+ppRelationTuple (RelationTuple res rel subj mSubRelation mTag) =
+  ppObject res <> PP.char '#' <> ppRelation rel <> PP.char '@' <> ppObject subj <> ppMaybeRelation mSubRelation <> ppMaybeTag mTag
+
+ppMaybeTag :: Maybe Tag -> Doc
+ppMaybeTag Nothing = PP.empty
+ppMaybeTag (Just (Tag txt)) = PP.char '%' <> ppText txt
+
+-- for now this only allows [a-z][a-z0-9_]{1,62}[a-z0-9]
+pTag :: Parser Tag
+pTag =
+  do char '%'
+     t <- pName
+     pure (Tag t)
 
 ppRelationTuples :: [RelationTuple] -> Doc
 ppRelationTuples rt =
@@ -305,7 +322,8 @@ pRelationTuple =
      mSubRelation <- optional $
        do char '#'
           pRelation
-     pure $ RelationTuple res rel subj mSubRelation
+     mTag <- optional pTag
+     pure $ RelationTuple res rel subj mSubRelation mTag
 
 -- alas, `mapLeft` would be nice here, but I am not adding a dependency just for that
 parseRelationTuple :: Text -> Either String RelationTuple
@@ -319,19 +337,27 @@ pRelationTuples =
   do scnl
      many (pRelationTuple <* scnl)
 
--- * predicates
+-- * simple predicates
 
 hasSubjectType :: ObjectType -> RelationTuple -> Bool
-hasSubjectType st' (RelationTuple _ _ (Object st _) _) = st == st'
+hasSubjectType st' (RelationTuple _ _ (Object st _) _ _) = st == st'
 
 hasSubject :: Object AllowWildcard -> RelationTuple -> Bool
-hasSubject subj (RelationTuple _ _ subj' _) = subj == subj'
+hasSubject subj (RelationTuple _ _ subj' _ _) = subj == subj'
+
+hasResourceType :: ObjectType -> RelationTuple -> Bool
+hasResourceType rt' (RelationTuple (Object rt _) _ _ _ _) = rt == rt'
 
 hasResource :: Object NoWildcard -> RelationTuple -> Bool
-hasResource res (RelationTuple res' _ _ _) = res == res'
+hasResource res (RelationTuple res' _ _ _ _) = res == res'
 
 hasRelation :: Relation -> RelationTuple -> Bool
-hasRelation rel (RelationTuple _ rel' _ _) = rel == rel'
+hasRelation rel (RelationTuple _ rel' _ _ _) = rel == rel'
+
+hasTag :: Tag -> RelationTuple -> Bool
+hasTag tag (RelationTuple _ _ _ _ mTag) = (Just tag) == mTag
+
+-- hasTag :: Tag -> RelationTuple -> Bool
 
 -- * QuasiQuoters
 

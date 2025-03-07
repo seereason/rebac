@@ -1,3 +1,4 @@
+{- DEPRECATED, NOT IN USE -}
 {-# language TemplateHaskell   #-}
 {-# language TypeFamilies      #-}
 {-# language OverloadedStrings #-}
