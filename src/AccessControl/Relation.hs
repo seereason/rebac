@@ -11,8 +11,10 @@
 module AccessControl.Relation where
 
 -- import AccessControl.Schema (Permission(..), Relation(..), ToPermission(..), ToRelation(..), pName, pRelation, ppRelation, pObjectType, ppObjectType, ppText)
+import Data.Char (isSpace)
 import Data.Data (Data)
 import Data.Either (either)
+import Data.Functor (void)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import Data.Proxy (Proxy(..))
@@ -52,9 +54,13 @@ ppText t = PP.text (T.unpack t)
 
 sc :: Parser ()
 sc = L.space
-  hspace1
+  (void $ takeWhile1P (Just "white space") isHSpace) -- this is hspace1 but that was not added until 9.0
   (L.skipLineComment "#")
   (L.skipBlockComment "/*" "*/")
+  where
+    -- | Is it a horizontal space character?
+    isHSpace :: Char -> Bool
+    isHSpace x = isSpace x && x /= '\n' && x /= '\r'
 
 scnl :: Parser ()
 scnl = L.space
