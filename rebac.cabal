@@ -20,6 +20,7 @@ library
                        AccessControl.Check
                        AccessControl.Relation
                        AccessControl.Schema
+                       AccessControl.Validate
   -- other-modules:
   -- other-extensions:
   build-depends:       base ^>=4.12.0.0,
@@ -31,6 +32,7 @@ library
                        text ^>=1.2,
                        template-haskell,
                        th-lift-instances,
+                       time,
                        userid
   hs-source-dirs:      src
   default-language:    Haskell2010
@@ -46,4 +48,5 @@ test-suite Test
                      hspec,
                      QuickCheck,
                      text,
+                     time,
                      rebac

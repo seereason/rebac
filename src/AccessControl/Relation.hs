@@ -14,6 +14,7 @@ module AccessControl.Relation where
 import Data.Char (isSpace)
 import Data.Data (Data)
 import Data.Either (either)
+import Data.Fixed  (Fixed(MkFixed), Pico)
 import Data.Functor (void)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
@@ -21,6 +22,9 @@ import Data.Proxy (Proxy(..))
 import Data.SafeCopy (SafeCopy(..), base)
 import Data.Text (Text)
 import qualified Data.Text as T
+import Data.Time.Clock (NominalDiffTime(..), UTCTime)
+import Data.Time.Clock.POSIX (POSIXTime, utcTimeToPOSIXSeconds, posixSecondsToUTCTime)
+import Data.Time.Format (parseTimeM, defaultTimeLocale, formatTime, iso8601DateFormat)
 import Data.Typeable (Typeable)
 import Data.UserId (UserId(..))
 import Data.Void (Void)
@@ -39,7 +43,6 @@ import qualified Text.PrettyPrint.HughesPJ as PP
 -- import AccessControl.Schema (ObjectType(..),sc, scnl) -- for Lift Text instance
 
 -- FIXME: how does string escaping work?
-
 
 type Parser = Parsec Void Text
 
@@ -216,7 +219,6 @@ deriving instance Generic (Object NoWildcard)
 deriving instance Lift (Object AllowWildcard)
 deriving instance Lift (Object NoWildcard)
 
-
 instance SafeCopy (Object AllowWildcard)  where version = 1 ; kind = base
 instance SafeCopy (Object NoWildcard) where version = 1 ; kind = base
 
@@ -272,12 +274,28 @@ instance ToObject (Maybe UserId) where
   toObject Nothing           = Object (ObjectType "user") (ObjectId "anonymous")
 
 
--- * RelationTuple
+-- * RelationTuple and friends
 
 newtype Tag = Tag { unTag :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 instance SafeCopy Tag where version = 1 ; kind = base
+
+-- ** Expiration is a hack to get around the fact that we need to upgrade `time-1.15` before we have a `Lift` instance for `POSIXTime`
+
+newtype Expiration = Expiration { unExpiration :: Integer }
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
+
+instance SafeCopy Expiration where version = 1 ; kind = base
+
+posixTimeToExpiration :: POSIXTime -> Expiration
+posixTimeToExpiration time =
+  let (MkFixed i) = ((realToFrac time) :: Pico)
+  in Expiration i
+
+expirationToPOSIXTime :: Expiration -> POSIXTime
+expirationToPOSIXTime (Expiration i) =
+  realToFrac ((MkFixed i) :: Pico)
 
 -- | Define a relationship between a 'resource' and 'subject'
 data RelationTuple = RelationTuple
@@ -286,6 +304,7 @@ data RelationTuple = RelationTuple
   , subject         :: Object AllowWildcard
   , subjectRelation :: Maybe Relation
   , tag             :: Maybe Tag
+  , expiration      :: Maybe Expiration
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
@@ -300,12 +319,16 @@ ppMaybeRelation Nothing = PP.empty
 ppMaybeRelation (Just rel) = PP.char '#' <> ppRelation rel
 
 ppRelationTuple :: RelationTuple -> Doc
-ppRelationTuple (RelationTuple res rel subj mSubRelation mTag) =
-  ppObject res <> PP.char '#' <> ppRelation rel <> PP.char '@' <> ppObject subj <> ppMaybeRelation mSubRelation <> ppMaybeTag mTag
+ppRelationTuple (RelationTuple res rel subj mSubRelation mTag mExpiration) =
+  ppObject res <> PP.char '#' <> ppRelation rel <> PP.char '@' <> ppObject subj <> ppMaybeRelation mSubRelation <> ppMaybeTag mTag <> ppMaybeExpiration mExpiration
 
 ppMaybeTag :: Maybe Tag -> Doc
 ppMaybeTag Nothing = PP.empty
 ppMaybeTag (Just (Tag txt)) = PP.char '%' <> ppText txt
+
+ppMaybeExpiration :: Maybe Expiration -> Doc
+ppMaybeExpiration Nothing = PP.empty
+ppMaybeExpiration (Just t) = PP.text $ "[expiration:" ++ (formatTime defaultTimeLocale (iso8601DateFormat (Just "%H:%M:%SZ")) (posixSecondsToUTCTime (expirationToPOSIXTime t))) ++ "]"
 
 -- for now this only allows [a-z][a-z0-9_]{1,62}[a-z0-9]
 pTag :: Parser Tag
@@ -313,6 +336,18 @@ pTag =
   do char '%'
      t <- pName
      pure (Tag t)
+
+pExpiration :: Parser Expiration
+pExpiration =
+  do string "[expiration:"
+     time <- try $ do timeStr <- some (digitChar <|> char ':' <|> char '-' <|> char 'T' <|> char 'Z')
+                      case parseTimeM True defaultTimeLocale (iso8601DateFormat (Just "%H:%M:%SZ")) timeStr of
+                        (Just t) -> pure (t :: UTCTime)
+                        Nothing -> fail $ "could not parse "++ timeStr
+
+
+     char ']'
+     pure (posixTimeToExpiration (utcTimeToPOSIXSeconds time))
 
 ppRelationTuples :: [RelationTuple] -> Doc
 ppRelationTuples rt =
@@ -329,7 +364,8 @@ pRelationTuple =
        do char '#'
           pRelation
      mTag <- optional pTag
-     pure $ RelationTuple res rel subj mSubRelation mTag
+     mExpiration <- optional pExpiration
+     pure $ RelationTuple res rel subj mSubRelation mTag mExpiration
 
 -- alas, `mapLeft` would be nice here, but I am not adding a dependency just for that
 parseRelationTuple :: Text -> Either String RelationTuple
@@ -346,22 +382,22 @@ pRelationTuples =
 -- * simple predicates
 
 hasSubjectType :: ObjectType -> RelationTuple -> Bool
-hasSubjectType st' (RelationTuple _ _ (Object st _) _ _) = st == st'
+hasSubjectType st' (RelationTuple _ _ (Object st _) _ _ _) = st == st'
 
 hasSubject :: Object AllowWildcard -> RelationTuple -> Bool
-hasSubject subj (RelationTuple _ _ subj' _ _) = subj == subj'
+hasSubject subj (RelationTuple _ _ subj' _ _ _) = subj == subj'
 
 hasResourceType :: ObjectType -> RelationTuple -> Bool
-hasResourceType rt' (RelationTuple (Object rt _) _ _ _ _) = rt == rt'
+hasResourceType rt' (RelationTuple (Object rt _) _ _ _ _ _) = rt == rt'
 
 hasResource :: Object NoWildcard -> RelationTuple -> Bool
-hasResource res (RelationTuple res' _ _ _ _) = res == res'
+hasResource res (RelationTuple res' _ _ _ _ _) = res == res'
 
 hasRelation :: Relation -> RelationTuple -> Bool
-hasRelation rel (RelationTuple _ rel' _ _ _) = rel == rel'
+hasRelation rel (RelationTuple _ rel' _ _ _ _) = rel == rel'
 
 hasTag :: Tag -> RelationTuple -> Bool
-hasTag tag (RelationTuple _ _ _ _ mTag) = (Just tag) == mTag
+hasTag tag (RelationTuple _ _ _ _ mTag _) = (Just tag) == mTag
 
 -- hasTag :: Tag -> RelationTuple -> Bool
 

@@ -34,6 +34,9 @@ import Text.PrettyPrint.HughesPJ ((<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 import qualified Text.Megaparsec.Char.Lexer as L -- (1)
 
+
+-- * Common Expression Language
+
 -- * Permission
 
 newtype Permission = Permission { unPermission :: Text }
@@ -56,8 +59,6 @@ pPermission = Permission <$> pName
 ppPermissionRelation :: Either Permission Relation -> PP.Doc
 ppPermissionRelation (Left p)  = ppPermission p
 ppPermisisonRelation (Right r) = ppRelation r
-
-
 
 class (ToObject resource, ToPermission permission, ToObject subject) => KnownPermission resource permission subject
 -- instance KnownPermission (Object ResourceK) Permission (Object SubjectK)
@@ -106,11 +107,12 @@ data ReferenceKind
   = Plain
   | SubjectWildcard
   | SubjectRelation Text
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)  
+  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
 data TypeReference = TypeReference
-  { referenceType  :: Text
-  , referenceKind  :: ReferenceKind 
+  { referenceType       :: Text
+  , referenceKind       :: ReferenceKind
+  , referenceExpiration :: Bool            -- does this TypeReference have `with expiration` -- this  does not seem future proof for when we have CELs that could include the expiration
 --  , objectRelation :: Maybe Text
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
@@ -191,10 +193,12 @@ ppReferenceKind SubjectWildcard = PP.text ":*"
 ppReferenceKind (SubjectRelation rel) = PP.char '#' <> ppText rel
 
 ppTypeReference :: TypeReference -> PP.Doc
-ppTypeReference (TypeReference r rKind) =
-  ppText r <> ppReferenceKind rKind
+ppTypeReference (TypeReference r rKind expiration) =
+  ppText r <> ppReferenceKind rKind <> ppExpiration expiration
 
-
+ppExpiration :: Bool -> PP.Doc
+ppExpiration False = PP.empty
+ppExpiration True  = PP.text " with expiration"
 
 ppPermissionExpression :: PermissionExpression -> PP.Doc
 ppPermissionExpression (Union a b)        = ppPermissionExpression a <+> PP.char '+' <+> ppPermissionExpression b
@@ -286,11 +290,17 @@ pReferenceKind =
    do sc
       pure Plain
 
+pExpiration :: Parser Bool
+pExpiration =
+  do sc
+     (string "with expiration" *> pure True) <|> pure False
+
 pTypeReference :: Parser TypeReference
 pTypeReference =
   do r <- pName
      k <- pReferenceKind
-     pure (TypeReference r k)
+     e <- pExpiration
+     pure (TypeReference r k e)
 
 test_pTypeReference :: IO ()
 test_pTypeReference =
@@ -394,7 +404,7 @@ pPermissionExpression =
 -}
 test_pPermissionExpression =
   do parseTest pPermissionExpression "writer"
-     parseTest pPermissionExpression "(writer)" 
+     parseTest pPermissionExpression "(writer)"
      parseTest pPermissionExpression "writer + reader"
      parseTest pPermissionExpression "writer + (reader + commenter)"
      parseTest pPermissionExpression "(writer - reader) + commenter)"
@@ -436,7 +446,7 @@ pSchema =
 test_pSchema :: IO ()
 test_pSchema =
   do let res = runParser pSchema "" (T.unlines [ "\ndefinition user {}"
-                                               , "definition document {relation writer: user\nrelation reader: user | user:* | usergroup#member\n}"
+                                               , "definition document {relation writer: user\nrelation reader: user | user:* | usergroup#member | user with expiration\n}"
                                                , "definition thing {relation writer: user\nrelation reader: user\n permission edit = writer\n permission view = writer + reader & some->arrow}\n\n"
                                                ])
      case res of

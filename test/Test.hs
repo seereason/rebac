@@ -8,6 +8,7 @@ import AccessControl.Schema
 import Data.Acid
 import Data.Acid.Memory
 import Data.Text (Text)
+import Data.Time.Clock
 import Test.Hspec
 
 -- * Example
@@ -29,7 +30,7 @@ schema1 =
         relation org: organization
 
         relation owner: user
-        relation reader: user | user:*
+        relation reader: user | user:* | user with expiration
 
         permission edit = owner
         permission view = reader + owner + org->can_admin
@@ -46,6 +47,7 @@ rels1 =
     organization:theorg#admin@user:hannah                  # Hannah is the admin of the organization
     document:somedocument#org@organization:theorg          # `theorg` is the organization for the document
     document:publicdoc#reader@user:*                       # a publicly readable document
+    document:somedocument#reader@user:tom[expiration:2040-12-31T23:59:59Z] # Tom is a reader on somedocument, but only until 2040
   |]
 
 -- some resources
@@ -79,6 +81,9 @@ bob = [object| user:bob |]
 hannah :: Object NoWildcard
 hannah = [object| user:hannah |]
 
+tom :: Object NoWildcard
+tom = [object| user:tom |]
+
 -- some relation names
 
 edit = Permission "edit"
@@ -90,27 +95,27 @@ defMap1 = mkDefMap (definitions schema1)
 t1 =
   do putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject bob)
-     print $ check defMap1 rels1 somedocument view bob
+     print $ check defMap1 rels1 somedocument view bob Nothing
      putStrLn $ "expected: NotAllowed - not an owner, reader, or admin"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject hannah)
-     print $ check defMap1 rels1 somedocument view hannah
+     print $ check defMap1 rels1 somedocument view hannah Nothing
      putStrLn $ "expected: Allowed - hannah is an admin"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, edit, ppObject jill)
-     print $ check defMap1 rels1 somedocument edit jill
+     print $ check defMap1 rels1 somedocument edit jill Nothing
      putStrLn $ "expected: Allowed - jill is the owner"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, edit, ppObject sean)
-     print $ check defMap1 rels1 somedocument edit sean
+     print $ check defMap1 rels1 somedocument edit sean Nothing
      putStrLn $ "expected: NotAllowed - sean is not the owner or an admin"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject somedocument, view, ppObject sean)
-     print $ check defMap1 rels1 somedocument view sean
+     print $ check defMap1 rels1 somedocument view sean Nothing
      putStrLn $ "expected: Allowed - sean is a reader"
      putStrLn "-----------------------------------------------------"
      print $ (ppObject publicdoc, view, ppObject sean)
-     print $ check defMap1 rels1 publicdoc view sean
+     print $ check defMap1 rels1 publicdoc view sean Nothing
      putStrLn $ "expected: Allowed - the publicdoc should be readable by everyone"
 
 
@@ -140,8 +145,14 @@ rels2 =
 test_Arrow :: SpecWith ()
 test_Arrow  =
  it "arrow relation" $ pure (
-  check (mkDefMap $ definitions schema1) rels1 somedocument view hannah   --- query acid (Check somedocument view hannah)
+  check (mkDefMap $ definitions schema1) rels1 somedocument view hannah Nothing   --- query acid (Check somedocument view hannah)
   ) `shouldReturn` Allowed
+
+
+test_Expires :: SpecWith ()
+test_Expires =
+  it "expiring relations" $
+    do pure (check (mkDefMap $ definitions schema1) rels1 somedocument view tom (Just (realToFrac 1763418777.734767739))) `shouldReturn` Allowed
 
 
 {-
@@ -169,6 +180,7 @@ main :: IO ()
 main = hspec $ do
   describe "AccessControl" $ do
    test_Arrow
+   test_Expires
 --   test_addRelationTuple
 --   test_removeRelationTuple
 
