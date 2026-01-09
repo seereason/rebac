@@ -5,6 +5,7 @@ module Main (main) where
 import AccessControl.Check
 import AccessControl.Relation
 import AccessControl.Schema
+import AccessControl.Validate
 import Data.Acid
 import Data.Acid.Memory
 import Data.Text (Text)

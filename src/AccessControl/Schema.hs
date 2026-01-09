@@ -42,7 +42,7 @@ import qualified Text.Megaparsec.Char.Lexer as L -- (1)
 newtype Permission = Permission { unPermission :: Text }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
--- instance SafeCopy Permission
+instance SafeCopy Permission
 
 class ToPermission a where
   toPermission :: a -> Permission
@@ -77,7 +77,7 @@ data ObjectRelation = ObjectRelation
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
--- instance SafeCopy ObjectRelation
+instance SafeCopy ObjectRelation
 {-
 data ResourceId
   = ResourceId Text
@@ -109,6 +109,8 @@ data ReferenceKind
   | SubjectRelation Text
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
+instance SafeCopy ReferenceKind
+
 data TypeReference = TypeReference
   { referenceType       :: Text
   , referenceKind       :: ReferenceKind
@@ -117,7 +119,7 @@ data TypeReference = TypeReference
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
--- instance SafeCopy TypeReference
+instance SafeCopy TypeReference
 
 data PermissionExpression
   = Union        PermissionExpression PermissionExpression
@@ -127,7 +129,7 @@ data PermissionExpression
   | Rel          Relation
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
--- instance SafeCopy PermissionExpression
+instance SafeCopy PermissionExpression
 
 data ObjectPermission = ObjectPermission
   { opName :: Text
@@ -135,7 +137,7 @@ data ObjectPermission = ObjectPermission
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
--- instance SafeCopy ObjectPermission
+instance SafeCopy ObjectPermission
 
 -- does not preserve comments or whitespace
 --
@@ -145,7 +147,7 @@ data Definition = Definition
   , defDecls :: [ Either ObjectRelation ObjectPermission ]
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
--- instance SafeCopy Definition
+instance SafeCopy Definition
 
 objectRelations :: Definition -> [ ObjectRelation ]
 objectRelations def = lefts (defDecls def)
@@ -155,7 +157,7 @@ data Schema = Schema
   }
   deriving (Eq, Ord, Read, Show, Data, Typeable, Generic, Lift)
 
--- instance SafeCopy Schema
+instance SafeCopy Schema
 
 knownObjectTypes :: Schema -> [ ObjectType ]
 knownObjectTypes (Schema defs) = nub $ map (ObjectType . defName) defs
@@ -441,6 +443,7 @@ pSchema :: Parser Schema
 pSchema =
   do scnl
      defs <- many (pDefinition <* scnl)
+     eof
      pure $ Schema defs
 
 test_pSchema :: IO ()

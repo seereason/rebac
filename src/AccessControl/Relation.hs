@@ -297,6 +297,16 @@ expirationToPOSIXTime :: Expiration -> POSIXTime
 expirationToPOSIXTime (Expiration i) =
   realToFrac ((MkFixed i) :: Pico)
 
+formatExpiration :: Expiration -> String
+formatExpiration t = formatTime defaultTimeLocale (iso8601DateFormat (Just "%H:%M:%SZ")) (posixSecondsToUTCTime (expirationToPOSIXTime t))
+
+parseExpiration :: String -> Maybe Expiration
+parseExpiration timeStr =
+  case parseTimeM True defaultTimeLocale (iso8601DateFormat (Just "%H:%M:%SZ")) timeStr of
+    Nothing  -> Nothing
+    (Just t) -> Just $ posixTimeToExpiration (utcTimeToPOSIXSeconds t)
+
+
 -- | Define a relationship between a 'resource' and 'subject'
 data RelationTuple = RelationTuple
   { resource        :: Object NoWildcard

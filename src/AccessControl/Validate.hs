@@ -7,7 +7,18 @@
 {-# language OverloadedStrings #-}
 {-# language QuasiQuotes, TemplateHaskell, DeriveLift #-}
 {-# language StandaloneDeriving #-}
-module AccessControl.Validate where
+module AccessControl.Validate (
+    Valid(..)
+  , ValidationError(..)
+  , RelPerm(..)
+  , mkDefMap
+  , ppRelMap
+  , ppPermMap
+  , ppRelPerm
+  , ppValidationError
+  , validate
+  , isValid
+  ) where
 
 import AccessControl.Relation (Object(..), ObjectType(..), WildcardObjectId(..), Relation(..), RelationTuple(..), Tag(..), ppRelationTuple, ppText, rel, rels)
 import AccessControl.Schema (Definition(..), ObjectPermission(..), ObjectRelation(..), Permission(..), PermissionExpression(..), ReferenceKind(..), Schema(..), TypeReference(..), ppPermissionExpression, ppTypeReference, ppTypeReferences, schema)
@@ -19,6 +30,7 @@ import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Maybe (isJust, isNothing)
+import Data.SafeCopy               (SafeCopy(..), base, contain, safeGet, safePut)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import GHC.Generics
@@ -44,6 +56,8 @@ data RelPerm = RelPerm
   }
   deriving (Eq, Ord, Read, Show, Data, Generic)
 
+instance SafeCopy RelPerm
+
 ppRelMap :: Map Text (NonEmpty TypeReference) -> Doc
 ppRelMap m =
   PP.vcat $ map ppRel (Map.toList m)
@@ -60,37 +74,47 @@ ppRelPerm :: RelPerm -> Doc
 ppRelPerm (RelPerm r p) =
   ppRelMap r $+$ ppPermMap p
 
-data Valid
+data Valid a
   = Valid
-  | NotValid [Text]
+  | NotValid a
   deriving (Eq, Ord, Read, Show, Data)
 
-isValid :: Valid -> Bool
+data ValidationError =
+  ValidationError RelationTuple [Text]
+  deriving (Eq, Ord, Read, Show, Generic)
+
+instance SafeCopy ValidationError where version = 1 ; kind = base
+
+ppValidationError :: ValidationError -> Doc
+ppValidationError (ValidationError rt messages) =
+  (PP.text "Validation failed for" <+> (ppRelationTuple rt) <+> "with errors:") $+$
+    PP.nest 2 (PP.vcat $ map (PP.text . Text.unpack) messages)
+
+isValid :: Valid a -> Bool
 isValid Valid = True
 isValid _     = False
 
-validate :: Schema -> RelationTuple -> Valid
-validate (Schema defs) rt@(RelationTuple res@(Object (ObjectType resourceTy) _resourceId) (Relation rel) sub@(Object (ObjectType subjectType) subjectId) subRel mTag mExpiration) =
-  let defMap = mkDefMap defs
-  in case Map.lookup resourceTy defMap of
-       Nothing -> NotValid ["resource has unknown object type " <> resourceTy]
+validate :: Map Text RelPerm -> RelationTuple -> Valid ValidationError
+validate defMap rt@(RelationTuple res@(Object (ObjectType resourceTy) _resourceId) (Relation rel) sub@(Object (ObjectType subjectType) subjectId) subRel mTag mExpiration) =
+  case Map.lookup resourceTy defMap of
+       Nothing -> NotValid (ValidationError rt ["resource has unknown object type " <> resourceTy])
        (Just (RelPerm rm pm)) ->
          case Map.lookup rel rm of
-           Nothing -> NotValid ["relation " <> rel <> " not defined for " <> resourceTy]
+           Nothing -> NotValid (ValidationError rt ["relation " <> rel <> " not defined for " <> resourceTy])
            (Just typeReferences) ->
              anyValid $ map isMatch (NonEmpty.toList typeReferences)
   where
-    anyValid :: [Valid] -> Valid
+    anyValid :: [Valid ValidationError] -> Valid ValidationError
     anyValid attempts | any (\v -> v == Valid) attempts = Valid
-    anyValid attempts = NotValid (concat [ reason | NotValid reason <- attempts ])
+    anyValid attempts = NotValid (ValidationError rt (concat [ reason | NotValid (ValidationError rt reason) <- attempts ]))
 
     expirationMatch tr refExp =
       if | (isNothing mExpiration) ->
              if | not refExp -> Valid
-                | otherwise  -> NotValid [ "relation tuple does not have an expiration but one is required. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)]
+                | otherwise  -> NotValid (ValidationError rt [ "relation tuple does not have an expiration but one is required. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)])
          | otherwise ->
              if | refExp    -> Valid
-                | otherwise -> NotValid [ "relation tuple has an expiration, but one is not allowed. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)]
+                | otherwise -> NotValid (ValidationError rt [ "relation tuple has an expiration, but one is not allowed. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)])
 
     isMatch tr@(TypeReference refType refKind refExp) =
       if | (subjectType == refType) ->
@@ -99,13 +123,13 @@ validate (Schema defs) rt@(RelationTuple res@(Object (ObjectType resourceTy) _re
                        case refKind of
                          Plain -> case subjectId of
                                     Specific _ -> Valid
-                                    Wildcard -> NotValid ["relation tuple has a wildcard, but wildcards are not allowed. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)]
+                                    Wildcard -> NotValid (ValidationError rt ["relation tuple has a wildcard, but wildcards are not allowed. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)])
                          SubjectWildcard ->
                            case subjectId of
                              Wildcard   -> Valid
-                             Specific _ -> NotValid ["relation tuple has a specific id, but only wildcards are allowed. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)]
+                             Specific _ -> NotValid (ValidationError rt ["relation tuple has a specific id, but only wildcards are allowed. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)])
                    | otherwise -> expireValid
-         | otherwise -> NotValid [ resourceTy <> " does not match " <> refType ]
+         | otherwise -> NotValid (ValidationError rt[ resourceTy <> " does not match " <> refType ] )
 
 
 schema1 :: Schema
