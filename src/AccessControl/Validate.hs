@@ -37,7 +37,8 @@ import GHC.Generics
 import Text.PrettyPrint.HughesPJ (Doc, (<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 
-debugTrace = trace
+-- debugTrace = trace
+debugTrace = const id
 
 mkDefMap
   :: [Definition]

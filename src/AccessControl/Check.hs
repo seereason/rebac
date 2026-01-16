@@ -31,10 +31,8 @@ import GHC.Generics
 import Text.PrettyPrint.HughesPJ (Doc, (<+>), ($$), ($+$))
 import qualified Text.PrettyPrint.HughesPJ as PP
 
-debugTrace = trace
--- debugTrace = const id
-
-
+-- debugTrace = trace
+debugTrace = const id
 
 data Access
   = Allowed
