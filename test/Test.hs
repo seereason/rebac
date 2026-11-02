@@ -284,6 +284,65 @@ test_cycles =
     it "terminates for a non-owner of folders that are each other's parent" $
       folderCheck [object| folder:a |] view [object| user:dave |] `shouldBe` False
 
+-- * Names that are relations or permissions
+
+-- | uses a relation or permission wherever either may appear
+nameSchema :: Schema
+nameSchema =
+  [schema|
+    definition user {}
+
+    definition usergroup {
+      relation direct_member: user
+    }
+
+    definition org {
+      relation admin: user
+    }
+
+    definition doc {
+      relation owner: user
+      relation org: org
+      relation reader: usergroup#direct_member
+      permission edit = owner
+      permission view = edit + reader
+      permission manage = org->admin
+      permission a = b
+      permission b = a
+    }
+  |]
+
+nameRels :: [RelationTuple]
+nameRels =
+  [rels|
+    doc:1#owner@user:jill
+    doc:1#org@org:acme
+    doc:1#reader@usergroup:x#direct_member
+    org:acme#admin@user:hannah
+    usergroup:x#direct_member@user:alice
+  |]
+
+nameCheck :: Object NoWildcard -> Permission -> Object NoWildcard -> Bool
+nameCheck res perm subj = isAllowed (check (mkDefMap (definitions nameSchema)) nameRels res perm subj Nothing)
+
+test_names :: SpecWith ()
+test_names =
+  describe "relations and permissions by name" $ do
+    it "evaluates a permission that refers to a permission" $
+      nameCheck [object| doc:1 |] view [object| user:jill |] `shouldBe` True
+    it "follows a subject set whose subject relation is a relation" $
+      nameCheck [object| doc:1 |] view [object| user:alice |] `shouldBe` True
+    it "follows an arrow whose target is a relation" $
+      nameCheck [object| doc:1 |] (Permission "manage") [object| user:hannah |] `shouldBe` True
+    it "does not follow the arrow for someone else" $
+      nameCheck [object| doc:1 |] (Permission "manage") [object| user:jill |] `shouldBe` False
+    it "checks a relation directly" $
+      nameCheck [object| doc:1 |] (Permission "owner") [object| user:jill |] `shouldBe` True
+    it "does not grant a relation to someone without it" $
+      nameCheck [object| doc:1 |] (Permission "owner") [object| user:alice |] `shouldBe` False
+    it "terminates for permissions defined in terms of each other" $
+      nameCheck [object| doc:1 |] (Permission "a") [object| user:jill |] `shouldBe` False
+
 -- | do all the tuples validate under groupSchema
 groupValid :: [RelationTuple] -> Bool
 groupValid = all (isValid . validate (mkDefMap (definitions groupSchema)))
@@ -340,12 +399,12 @@ test_validateSchema =
                                 permission membership = direct_member
                               } |]
         `shouldBe` [SchemaError "usergroup" (Just "direct_member") (UnknownSubjectRelation "usergroup" "member")]
-    it "reports a subject relation that is a relation" $
+    it "accepts a subject relation that is a relation" $
       problems [schema| definition user {}
                         definition usergroup {
                           relation direct_member: user | usergroup#direct_member
                         } |]
-        `shouldBe` [UnsupportedSubjectRelation "usergroup" "direct_member"]
+        `shouldBe` []
     it "reports an unknown name in a permission" $
       validateSchema [schema| definition user {}
                               definition doc {
@@ -353,14 +412,14 @@ test_validateSchema =
                                 permission edit = ownr
                               } |]
         `shouldBe` [SchemaError "doc" (Just "edit") (UnknownName "ownr")]
-    it "reports a permission that refers to a permission" $
+    it "accepts a permission that refers to a permission" $
       problems [schema| definition user {}
                         definition doc {
                           relation owner: user
                           permission edit = owner
                           permission view = edit
                         } |]
-        `shouldBe` [UnsupportedPermissionReference "edit"]
+        `shouldBe` []
     it "reports & and -" $
       problems [schema| definition user {}
                         definition doc {
@@ -405,14 +464,14 @@ test_validateSchema =
                           permission view = org->can_admn
                         } |]
         `shouldBe` [ArrowTargetMissing "org" "org" "can_admn"]
-    it "reports an arrow target that is a relation" $
+    it "accepts an arrow target that is a relation" $
       problems [schema| definition user {}
                         definition org { relation admin: user }
                         definition doc {
                           relation org: org
                           permission view = org->admin
                         } |]
-        `shouldBe` [UnsupportedArrowTarget "org" "org" "admin"]
+        `shouldBe` []
 
 main :: IO ()
 main = hspec $ do
@@ -423,6 +482,7 @@ main = hspec $ do
    test_subjectSets
    test_validateSubjectRelation
    test_cycles
+   test_names
 --   test_addRelationTuple
 --   test_removeRelationTuple
 

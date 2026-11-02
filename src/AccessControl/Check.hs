@@ -142,11 +142,13 @@ checkOnPath path rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (
       case Map.lookup resourceTy rsDefMap of
            Nothing -> NotAllowed [ "object not found in definitions - " <> resourceTy ]
            (Just (RelPerm rm pm)) ->
-             -- find the requested permission
+             -- the name may be a permission or a relation, as it may in a
+             -- subject set (@type#name@) or at the end of an arrow (@rel->name@)
              case Map.lookup perm pm of
-               -- fixme: perm could also be a relation not actually a permission
-               Nothing -> NotAllowed [ "permission " <> perm <> " not defined for resource " <> resourceTy ]
                (Just expr) -> checkExpr (filterExpired now relationTuples) expr rm
+               Nothing
+                 | Map.member perm rm -> checkExpr (filterExpired now relationTuples) (Rel (Relation perm)) rm
+                 | otherwise -> NotAllowed [ "permission or relation " <> perm <> " not defined for resource " <> resourceTy ]
   where
     -- the path for anything this evaluation recurses into
     path' = Set.insert (resource, perm) path
@@ -182,7 +184,9 @@ checkOnPath path rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (
 --    checkExpr relationTuples (Ref tr@(TypeReference (Resource relName Nothing) Nothing)) rm =
     checkExpr relationTuples (Rel (Relation relName)) rm =
       case Map.lookup relName rm of
-        Nothing  -> NotAllowed [ "permission  " <> perm <> " refers to a relation " <> relName <> " which can not be found." ]
+        -- not a relation, so it should be another permission of this
+        -- resource; checkOnPath evaluates it, or reports that it is neither
+        Nothing  -> checkOnPath path' rsDefMap rsTuples resource (Permission relName) subject now
         (Just subjectTypes) ->
           debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ (T.unpack relName) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
           -- only the tuples of this relation count; a subject set on some

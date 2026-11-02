@@ -504,10 +504,7 @@ data SchemaProblem
   | ArrowFromWildcard Text                    -- ^ the left side of an arrow is a relation that allows wildcard subjects
   | ArrowTargetMissing Text Text Text         -- ^ @rel->name@ where type @t@, which @rel@ refers to, has no @name@
   | UnsupportedOperator Text                  -- ^ @&@ or @-@
-  | UnsupportedPermissionReference Text       -- ^ a permission expression names a permission, only relations are resolved
-  | UnsupportedSubjectRelation Text Text      -- ^ @type#name@ where @name@ is a relation, only permissions are followed
   | UnsupportedArrowRelation Text             -- ^ an arrow over a relation that is not a single plain type, only the first type would be followed
-  | UnsupportedArrowTarget Text Text Text     -- ^ @rel->name@ where @name@ is a relation of @t@, only permissions are followed
   deriving (Eq, Ord, Read, Show, Data, Generic)
 
 instance SafeCopy SchemaProblem
@@ -526,10 +523,7 @@ ppSchemaError (SchemaError d mMember problem) =
     problemText (ArrowFromWildcard n) = "uses " ++ s n ++ "-> but " ++ s n ++ " allows wildcard subjects"
     problemText (ArrowTargetMissing n t p) = "uses " ++ s n ++ "->" ++ s p ++ ", but " ++ s t ++ " has no " ++ s p
     problemText (UnsupportedOperator op) = "uses " ++ s op ++ ", which AccessControl.Check does not implement"
-    problemText (UnsupportedPermissionReference n) = "refers to the permission " ++ s n ++ ", AccessControl.Check only resolves relations in a permission expression"
-    problemText (UnsupportedSubjectRelation t n) = "refers to " ++ s t ++ "#" ++ s n ++ ", but " ++ s n ++ " is a relation and AccessControl.Check only follows permissions there"
     problemText (UnsupportedArrowRelation n) = "uses " ++ s n ++ "->, AccessControl.Check only follows an arrow over a relation with a single plain type"
-    problemText (UnsupportedArrowTarget n t p) = "uses " ++ s n ++ "->" ++ s p ++ ", but " ++ s p ++ " is a relation of " ++ s t ++ " and AccessControl.Check only follows permissions there"
 
 -- | check that a schema is consistent with itself
 --
@@ -564,9 +558,8 @@ validateSchema (Schema defs) =
       | not (Map.member ty defMap) = [ UnknownType ty ]
       | SubjectRelation n <- kind =
           case lookupMember ty n of
-            Nothing        -> [ UnknownSubjectRelation ty n ]
-            Just (Left _)  -> [ UnsupportedSubjectRelation ty n ]
-            Just (Right _) -> []
+            Nothing -> [ UnknownSubjectRelation ty n ]
+            Just _  -> []
       | otherwise = []
 
     checkExpression :: Text -> PermissionExpression -> [ SchemaProblem ]
@@ -577,9 +570,8 @@ validateSchema (Schema defs) =
         Exclusion a b    -> UnsupportedOperator "-" : checkExpression dn a ++ checkExpression dn b
         Rel (Relation n) ->
           case lookupMember dn n of
-            Nothing        -> [ UnknownName n ]
-            Just (Left _)  -> []
-            Just (Right _) -> [ UnsupportedPermissionReference n ]
+            Nothing -> [ UnknownName n ]
+            Just _  -> []
         Arrow (Relation n) target ->
           case lookupMember dn n of
             Nothing        -> [ UnknownName n ]
@@ -595,6 +587,5 @@ validateSchema (Schema defs) =
       | not (Map.member ty defMap) = []
       | otherwise =
           case lookupMember ty target of
-            Nothing        -> [ ArrowTargetMissing n ty target ]
-            Just (Left _)  -> [ UnsupportedArrowTarget n ty target ]
-            Just (Right _) -> []
+            Nothing -> [ ArrowTargetMissing n ty target ]
+            Just _  -> []
