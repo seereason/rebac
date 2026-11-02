@@ -177,6 +177,58 @@ test_removeRelationTuple  =
   ) `shouldReturn` (NotAllowed [])
 -}
 
+-- * Subject sets
+
+groupSchema :: Schema
+groupSchema =
+  [schema|
+    definition user {}
+
+    definition usergroup {
+      relation direct_member: user | usergroup#member
+      permission member = direct_member
+    }
+
+    definition page {
+      relation admin: user
+      relation viewer: user | usergroup#member | user:*
+      permission view = viewer + admin
+      permission edit = admin
+    }
+  |]
+
+groupRels :: [RelationTuple]
+groupRels =
+  [rels|
+    page:1#viewer@usergroup:x#member              # members of x can view page 1
+    page:1#admin@user:bob                         # bob administers page 1
+    usergroup:x#direct_member@user:alice          # alice is a member of x
+    usergroup:x#direct_member@usergroup:y#member  # members of y are members of x
+    usergroup:y#direct_member@user:carol          # carol is a member of y
+  |]
+
+-- | is the subject allowed the permission on the resource, under groupSchema and groupRels
+groupCheck :: Object NoWildcard -> Permission -> Object NoWildcard -> Bool
+groupCheck res perm subj = isAllowed (check (mkDefMap (definitions groupSchema)) groupRels res perm subj Nothing)
+
+test_subjectSets :: SpecWith ()
+test_subjectSets =
+  describe "subject sets" $ do
+    it "grants view to a member of a group that can view" $
+      groupCheck [object| page:1 |] view [object| user:alice |] `shouldBe` True
+    it "grants view through a nested group" $
+      groupCheck [object| page:1 |] view [object| user:carol |] `shouldBe` True
+    it "does not grant edit through the viewer relation's subject set" $
+      groupCheck [object| page:1 |] edit [object| user:alice |] `shouldBe` False
+    it "does not grant edit through a nested group either" $
+      groupCheck [object| page:1 |] edit [object| user:carol |] `shouldBe` False
+    it "grants edit to an admin" $
+      groupCheck [object| page:1 |] edit [object| user:bob |] `shouldBe` True
+    it "does not grant view to a non-member" $
+      groupCheck [object| page:1 |] view [object| user:dave |] `shouldBe` False
+    it "does not treat the group itself as one of its members" $
+      groupCheck [object| page:1 |] view [object| usergroup:x |] `shouldBe` False
+
 -- | the problems 'validateSchema' finds, without the definition and member they were found in
 problems :: Schema -> [SchemaProblem]
 problems = map seProblem . validateSchema
@@ -287,6 +339,7 @@ main = hspec $ do
    test_Arrow
    test_Expires
    test_validateSchema
+   test_subjectSets
 --   test_addRelationTuple
 --   test_removeRelationTuple
 

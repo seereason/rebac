@@ -18,7 +18,7 @@ import Data.List (partition)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Map (Map)
-import Data.Maybe (mapMaybe)
+import Data.Maybe (isNothing, mapMaybe)
 import Data.SafeCopy (SafeCopy)
 import           Data.Set (Set)
 import qualified Data.Set as Set
@@ -110,7 +110,7 @@ check :: Map Text RelPerm
       -> Object NoWildcard  -- ^ subject
       -> Maybe POSIXTime
       -> Access
-check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject@(Object (ObjectType subjectType) _) now =
+check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject now =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
   case filter (\(RelationTuple resource' _ _ _ _ _) -> resource == resource') rsTuples of
@@ -132,9 +132,23 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
     subjectIdMatch (ObjectId a) (Specific (ObjectId b)) = a == b
 --    subjectIdMatch a b = error $ "subjectIdMatch " ++ show (a,b)
 
-    isMatch :: Object NoWildcard -> Relation -> Object NoWildcard -> RelationTuple -> Bool
-    isMatch resourceA relationA (Object subjectTypeA subjectIdA) (RelationTuple resourceB relationB (Object subjectTypeB subjectIdB) Nothing _mTag _mExpiration) =
-      (resourceA == resourceB) && (relationA == relationB) && (subjectTypeA == subjectTypeB) && (subjectIdMatch subjectIdA subjectIdB)
+    -- | does a tuple with no subject relation name this subject, directly or by wildcard?
+    --
+    -- The caller has already narrowed the tuples to the right resource and relation.
+    isDirectMatch :: Object NoWildcard -> RelationTuple -> Bool
+    isDirectMatch (Object subjectTypeA subjectIdA) (RelationTuple _ _ (Object subjectTypeB subjectIdB) _ _ _) =
+      (subjectTypeA == subjectTypeB) && (subjectIdMatch subjectIdA subjectIdB)
+
+    -- | does the subject have the subject relation of any of these subject set tuples,
+    -- e.g. for @page:1#viewer\@usergroup:x#member@, is the subject a member of @usergroup:x@?
+    checkSubjectSets :: [Text] -> [ RelationTuple ] -> Access
+    checkSubjectSets reasons [] = NotAllowed reasons
+    checkSubjectSets reasons ((RelationTuple _ _ (Object ot (Specific oi)) (Just (Relation subRelation)) _mTag _mExpiration) : rts) =
+      case check rsDefMap rsTuples (Object ot oi) (Permission subRelation) subject now of
+        Allowed              -> Allowed
+        (NotAllowed reasons') -> checkSubjectSets (reasons ++ reasons') rts
+    -- a wildcard subject set, @type:*#rel@, is not valid and grants nothing
+    checkSubjectSets reasons (_ : rts) = checkSubjectSets reasons rts
 
     checkExpr :: [ RelationTuple ]
               -> PermissionExpression
@@ -147,20 +161,11 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
         Nothing  -> NotAllowed [ "permission  " <> perm <> " refers to a relation " <> relName <> " which can not be found." ]
         (Just subjectTypes) ->
           debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ (T.unpack relName) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
-          let (direct, others) = partition (hasSubjectType (ObjectType subjectType)) relationTuples
-          in if |  any (isMatch resource (Relation relName) subject) direct -> Allowed
-                | otherwise ->
-                    let checkOthers reasons [] = NotAllowed reasons
-                        -- why would the following case happen?
-                        checkOthers oldReasons ((RelationTuple res perm subj Nothing _mTag _mExpiration) : os) =
-                          debugTrace "not sure why we are seeing this checkOthers case" $ checkOthers oldReasons os
-                        checkOthers oldReasons ((RelationTuple res perm subj@(Object _ Wildcard) (Just (Relation subRelation)) _mTag _mExpiration):os) =
-                          debugTrace "not sure how to handle wilcards here" $ checkOthers oldReasons os
-                        checkOthers oldReasons ((RelationTuple res perm subj@(Object ot (Specific oi))  (Just (Relation subRelation)) _mTag _mExpiration):os) =
-                          case check rsDefMap rsTuples (Object ot oi) (Permission subRelation) subject now of
-                            Allowed -> Allowed
-                            (NotAllowed reasons) -> checkOthers (oldReasons ++ reasons) os
-                    in checkOthers [] others
+          -- only the tuples of this relation count; a subject set on some
+          -- other relation of the resource must not grant this one
+          let (direct, subjectSets) = partition (isNothing . subjectRelation) (filter ((== Relation relName) . relation) relationTuples)
+          in if | any (isDirectMatch subject) direct -> Allowed
+                | otherwise -> checkSubjectSets [] subjectSets
 
     checkExpr relationTuples p@(Union l r) rm =
       debugTrace ("\ncheckExpr - " ++ (show $ ppPermissionExpression p) ++ "\n") $
