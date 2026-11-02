@@ -120,17 +120,25 @@ validate defMap rt@(RelationTuple res@(Object (ObjectType resourceTy) _resourceI
     isMatch tr@(TypeReference refType refKind refExp) =
       if | (subjectType == refType) ->
              let expireValid = expirationMatch tr refExp
-             in if | isValid expireValid ->
-                       case refKind of
-                         Plain -> case subjectId of
-                                    Specific _ -> Valid
-                                    Wildcard -> NotValid (ValidationError rt ["relation tuple has a wildcard, but wildcards are not allowed. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)])
-                         SubjectWildcard ->
-                           case subjectId of
-                             Wildcard   -> Valid
-                             Specific _ -> NotValid (ValidationError rt ["relation tuple has a specific id, but only wildcards are allowed. " <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)])
+             in if | isValid expireValid -> subjectMatch tr refKind
                    | otherwise -> expireValid
-         | otherwise -> NotValid (ValidationError rt[ resourceTy <> " does not match " <> refType ] )
+         | otherwise -> NotValid (ValidationError rt[ subjectType <> " does not match " <> refType ] )
+
+    -- | the subject's id and subject relation must have the form the type reference allows:
+    -- @type@ a specific id, @type:*@ a wildcard, @type#rel@ a specific id with subject relation @rel@
+    subjectMatch tr refKind =
+      case (refKind, subjectId, subRel) of
+        (Plain,             Specific _, Nothing) -> Valid
+        (SubjectWildcard,   Wildcard,   Nothing) -> Valid
+        (SubjectRelation r, Specific _, Just (Relation r')) | r == r' -> Valid
+        (_, Wildcard, Just _) -> notValid tr "relation tuple has a wildcard subject with a subject relation, which is never allowed. "
+        (Plain, Wildcard, _) -> notValid tr "relation tuple has a wildcard, but wildcards are not allowed. "
+        (SubjectWildcard, Specific _, _) -> notValid tr "relation tuple has a specific id, but only wildcards are allowed. "
+        (SubjectRelation r, _, Nothing) -> notValid tr ("relation tuple has no subject relation, but " <> r <> " is required. ")
+        (SubjectRelation r, _, Just (Relation r')) -> notValid tr ("relation tuple has subject relation " <> r' <> ", but " <> r <> " is required. ")
+        (_, _, Just (Relation r')) -> notValid tr ("relation tuple has subject relation " <> r' <> ", but none is allowed. ")
+
+    notValid tr msg = NotValid (ValidationError rt [ msg <> Text.pack (show $ (PP.text "type reference =") <+> ppTypeReference tr <+> (PP.text ", relation tuple =") <+> ppRelationTuple rt)])
 
 
 schema1 :: Schema

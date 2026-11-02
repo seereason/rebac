@@ -229,6 +229,32 @@ test_subjectSets =
     it "does not treat the group itself as one of its members" $
       groupCheck [object| page:1 |] view [object| usergroup:x |] `shouldBe` False
 
+-- | do all the tuples validate under groupSchema
+groupValid :: [RelationTuple] -> Bool
+groupValid = all (isValid . validate (mkDefMap (definitions groupSchema)))
+
+test_validateSubjectRelation :: SpecWith ()
+test_validateSubjectRelation =
+  describe "validate with subject relations" $ do
+    it "accepts a subject set the relation allows" $
+      groupValid [rels|page:1#viewer@usergroup:x#member|] `shouldBe` True
+    it "accepts a plain subject the relation allows" $
+      groupValid [rels|page:1#viewer@user:7|] `shouldBe` True
+    it "accepts a wildcard the relation allows" $
+      groupValid [rels|page:1#viewer@user:*|] `shouldBe` True
+    it "rejects a plain subject where only a subject set is allowed" $
+      groupValid [rels|page:1#viewer@usergroup:x|] `shouldBe` False
+    it "rejects a subject set with the wrong subject relation" $
+      groupValid [rels|page:1#viewer@usergroup:x#direct_member|] `shouldBe` False
+    it "rejects a subject relation where only a plain subject is allowed" $
+      groupValid [rels|page:1#viewer@user:7#member|] `shouldBe` False
+    it "rejects a wildcard subject set" $
+      groupValid [rels|page:1#viewer@usergroup:*#member|] `shouldBe` False
+    it "rejects a subject type the relation does not allow" $
+      groupValid [rels|page:1#admin@usergroup:x#member|] `shouldBe` False
+    it "rejects a wildcard where wildcards are not allowed" $
+      groupValid [rels|page:1#admin@user:*|] `shouldBe` False
+
 -- | the problems 'validateSchema' finds, without the definition and member they were found in
 problems :: Schema -> [SchemaProblem]
 problems = map seProblem . validateSchema
@@ -340,6 +366,7 @@ main = hspec $ do
    test_Expires
    test_validateSchema
    test_subjectSets
+   test_validateSubjectRelation
 --   test_addRelationTuple
 --   test_removeRelationTuple
 
