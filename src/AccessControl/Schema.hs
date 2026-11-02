@@ -15,6 +15,7 @@ import Data.SafeCopy (SafeCopy)
 import Data.List (find, intersperse, nub)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
+import qualified Data.Map as Map
 import Data.Maybe (catMaybes, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -477,12 +478,123 @@ schema = QuasiQuoter
   }
 
 
-{-
-Implement a function that verifies that the schema is valid.
+-- * Schema consistency
 
-For example, if the permission uses an arrow, then the relation to the left of the arrow can not have a wilcard on its RHS.
+-- | a problem found by 'validateSchema'
+data SchemaError = SchemaError
+  { seDefinition :: Text       -- ^ the definition the problem is in
+  , seMember     :: Maybe Text -- ^ the relation or permission the problem is in, if any
+  , seProblem    :: SchemaProblem
+  }
+  deriving (Eq, Ord, Read, Show, Data, Generic)
 
-Also, it should check that every object referenced by a permission is defined, etc.
--}
-validateSchema :: Schema -> [ Text ]
-validateSchema s = []
+instance SafeCopy SchemaError
+
+-- | The @Unsupported...@ problems are valid in the schema language, but
+-- 'AccessControl.Check.check' does not implement them, so a schema using them
+-- would quietly never grant access (or, for @&@ and @-@, crash the check).
+-- Remove them as 'AccessControl.Check.check' learns to handle each case.
+data SchemaProblem
+  = DuplicateDefinition                       -- ^ the definition name is used more than once
+  | DuplicateMember                           -- ^ the relation or permission name is declared more than once in its definition
+  | UnknownType Text                          -- ^ a type reference names a definition that does not exist
+  | UnknownSubjectRelation Text Text          -- ^ @type#name@ where @type@ has no relation or permission @name@
+  | UnknownName Text                          -- ^ a permission expression names something its definition does not declare
+  | ArrowFromPermission Text                  -- ^ the left side of an arrow is a permission, it must be a relation
+  | ArrowFromWildcard Text                    -- ^ the left side of an arrow is a relation that allows wildcard subjects
+  | ArrowTargetMissing Text Text Text         -- ^ @rel->name@ where type @t@, which @rel@ refers to, has no @name@
+  | UnsupportedOperator Text                  -- ^ @&@ or @-@
+  | UnsupportedPermissionReference Text       -- ^ a permission expression names a permission, only relations are resolved
+  | UnsupportedSubjectRelation Text Text      -- ^ @type#name@ where @name@ is a relation, only permissions are followed
+  | UnsupportedArrowRelation Text             -- ^ an arrow over a relation that is not a single plain type, only the first type would be followed
+  | UnsupportedArrowTarget Text Text Text     -- ^ @rel->name@ where @name@ is a relation of @t@, only permissions are followed
+  deriving (Eq, Ord, Read, Show, Data, Generic)
+
+instance SafeCopy SchemaProblem
+
+ppSchemaError :: SchemaError -> PP.Doc
+ppSchemaError (SchemaError d mMember problem) =
+  PP.text "definition" <+> (ppText d <> maybe PP.empty (\m -> PP.text "," <+> ppText m) mMember <> PP.char ':') <+> PP.text (problemText problem)
+  where
+    s = T.unpack
+    problemText DuplicateDefinition = "is defined more than once"
+    problemText DuplicateMember = "is declared more than once"
+    problemText (UnknownType t) = "refers to type " ++ s t ++ ", which is not defined"
+    problemText (UnknownSubjectRelation t n) = "refers to " ++ s t ++ "#" ++ s n ++ ", but " ++ s t ++ " has no relation or permission " ++ s n
+    problemText (UnknownName n) = "refers to " ++ s n ++ ", which is not a relation or permission of " ++ s d
+    problemText (ArrowFromPermission n) = "uses " ++ s n ++ "-> but " ++ s n ++ " is a permission, an arrow must start from a relation"
+    problemText (ArrowFromWildcard n) = "uses " ++ s n ++ "-> but " ++ s n ++ " allows wildcard subjects"
+    problemText (ArrowTargetMissing n t p) = "uses " ++ s n ++ "->" ++ s p ++ ", but " ++ s t ++ " has no " ++ s p
+    problemText (UnsupportedOperator op) = "uses " ++ s op ++ ", which AccessControl.Check does not implement"
+    problemText (UnsupportedPermissionReference n) = "refers to the permission " ++ s n ++ ", AccessControl.Check only resolves relations in a permission expression"
+    problemText (UnsupportedSubjectRelation t n) = "refers to " ++ s t ++ "#" ++ s n ++ ", but " ++ s n ++ " is a relation and AccessControl.Check only follows permissions there"
+    problemText (UnsupportedArrowRelation n) = "uses " ++ s n ++ "->, AccessControl.Check only follows an arrow over a relation with a single plain type"
+    problemText (UnsupportedArrowTarget n t p) = "uses " ++ s n ++ "->" ++ s p ++ ", but " ++ s p ++ " is a relation of " ++ s t ++ " and AccessControl.Check only follows permissions there"
+
+-- | check that a schema is consistent with itself
+--
+-- Every name it uses must be defined, and it must only use what
+-- 'AccessControl.Check.check' implements. An empty list means no problems.
+validateSchema :: Schema -> [ SchemaError ]
+validateSchema (Schema defs) =
+  nub $ [ SchemaError n Nothing DuplicateDefinition | n <- duplicates (map defName defs) ] ++
+        concatMap checkDefinition defs
+  where
+    -- the first definition wins, any others are reported as duplicates
+    defMap :: Map.Map Text Definition
+    defMap = Map.fromListWith (\_new old -> old) [ (defName d, d) | d <- defs ]
+
+    declName :: Either ObjectRelation ObjectPermission -> Text
+    declName = either orName opName
+
+    lookupMember :: Text -> Text -> Maybe (Either ObjectRelation ObjectPermission)
+    lookupMember ty n = Map.lookup ty defMap >>= find ((== n) . declName) . defDecls
+
+    duplicates :: [Text] -> [Text]
+    duplicates xs = [ x | (x, c) <- Map.toList (Map.fromListWith (+) [ (x, 1 :: Int) | x <- xs ]), c > 1 ]
+
+    checkDefinition :: Definition -> [ SchemaError ]
+    checkDefinition (Definition dn decls) =
+      [ SchemaError dn (Just n) DuplicateMember | n <- duplicates (map declName decls) ] ++
+      concat [ map (SchemaError dn (Just (orName r))) (concatMap checkReference (NonEmpty.toList (orObjectTypes r))) | Left r <- decls ] ++
+      concat [ map (SchemaError dn (Just (opName p))) (checkExpression dn (opExpr p)) | Right p <- decls ]
+
+    checkReference :: TypeReference -> [ SchemaProblem ]
+    checkReference (TypeReference ty kind _)
+      | not (Map.member ty defMap) = [ UnknownType ty ]
+      | SubjectRelation n <- kind =
+          case lookupMember ty n of
+            Nothing        -> [ UnknownSubjectRelation ty n ]
+            Just (Left _)  -> [ UnsupportedSubjectRelation ty n ]
+            Just (Right _) -> []
+      | otherwise = []
+
+    checkExpression :: Text -> PermissionExpression -> [ SchemaProblem ]
+    checkExpression dn expr =
+      case expr of
+        Union a b        -> checkExpression dn a ++ checkExpression dn b
+        Intersection a b -> UnsupportedOperator "&" : checkExpression dn a ++ checkExpression dn b
+        Exclusion a b    -> UnsupportedOperator "-" : checkExpression dn a ++ checkExpression dn b
+        Rel (Relation n) ->
+          case lookupMember dn n of
+            Nothing        -> [ UnknownName n ]
+            Just (Left _)  -> []
+            Just (Right _) -> [ UnsupportedPermissionReference n ]
+        Arrow (Relation n) target ->
+          case lookupMember dn n of
+            Nothing        -> [ UnknownName n ]
+            Just (Right _) -> [ ArrowFromPermission n ]
+            Just (Left (ObjectRelation _ refs))
+              | any ((== SubjectWildcard) . referenceKind) refs -> [ ArrowFromWildcard n ]
+              | (TypeReference ty Plain _ :| []) <- refs -> checkArrowTarget n ty target
+              | otherwise -> [ UnsupportedArrowRelation n ]
+
+    -- an undefined @ty@ has already been reported as 'UnknownType' on the relation
+    checkArrowTarget :: Text -> Text -> Text -> [ SchemaProblem ]
+    checkArrowTarget n ty target
+      | not (Map.member ty defMap) = []
+      | otherwise =
+          case lookupMember ty target of
+            Nothing        -> [ ArrowTargetMissing n ty target ]
+            Just (Left _)  -> [ UnsupportedArrowTarget n ty target ]
+            Just (Right _) -> []

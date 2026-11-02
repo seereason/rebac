@@ -177,11 +177,116 @@ test_removeRelationTuple  =
   ) `shouldReturn` (NotAllowed [])
 -}
 
+-- | the problems 'validateSchema' finds, without the definition and member they were found in
+problems :: Schema -> [SchemaProblem]
+problems = map seProblem . validateSchema
+
+test_validateSchema :: SpecWith ()
+test_validateSchema =
+  describe "validateSchema" $ do
+    it "accepts schema1" $ validateSchema schema1 `shouldBe` []
+    it "accepts schema2" $ validateSchema schema2 `shouldBe` []
+    it "reports a duplicate definition" $
+      validateSchema [schema| definition user {}
+                              definition user {} |]
+        `shouldBe` [SchemaError "user" Nothing DuplicateDefinition]
+    it "reports a duplicate member" $
+      validateSchema [schema| definition user {}
+                              definition doc {
+                                relation owner: user
+                                permission owner = owner
+                              } |]
+        `shouldBe` [SchemaError "doc" (Just "owner") DuplicateMember]
+    it "reports an unknown type" $
+      validateSchema [schema| definition doc { relation owner: usr } |]
+        `shouldBe` [SchemaError "doc" (Just "owner") (UnknownType "usr")]
+    it "reports an unknown subject relation" $
+      validateSchema [schema| definition user {}
+                              definition usergroup {
+                                relation direct_member: user | usergroup#member
+                                permission membership = direct_member
+                              } |]
+        `shouldBe` [SchemaError "usergroup" (Just "direct_member") (UnknownSubjectRelation "usergroup" "member")]
+    it "reports a subject relation that is a relation" $
+      problems [schema| definition user {}
+                        definition usergroup {
+                          relation direct_member: user | usergroup#direct_member
+                        } |]
+        `shouldBe` [UnsupportedSubjectRelation "usergroup" "direct_member"]
+    it "reports an unknown name in a permission" $
+      validateSchema [schema| definition user {}
+                              definition doc {
+                                relation owner: user
+                                permission edit = ownr
+                              } |]
+        `shouldBe` [SchemaError "doc" (Just "edit") (UnknownName "ownr")]
+    it "reports a permission that refers to a permission" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission edit = owner
+                          permission view = edit
+                        } |]
+        `shouldBe` [UnsupportedPermissionReference "edit"]
+    it "reports & and -" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          relation banned: user
+                          permission a = owner & banned
+                          permission b = owner - banned
+                        } |]
+        `shouldBe` [UnsupportedOperator "&", UnsupportedOperator "-"]
+    it "reports an arrow from a permission" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission edit = owner
+                          permission view = edit->x
+                        } |]
+        `shouldBe` [ArrowFromPermission "edit"]
+    it "reports an arrow from a wildcard relation" $
+      problems [schema| definition user { relation self: user
+                                          permission x = self }
+                        definition doc {
+                          relation reader: user | user:*
+                          permission view = reader->x
+                        } |]
+        `shouldBe` [ArrowFromWildcard "reader"]
+    it "reports an arrow over a relation with more than one type" $
+      problems [schema| definition user { relation self: user
+                                          permission x = self }
+                        definition org { relation self: user
+                                         permission x = self }
+                        definition doc {
+                          relation parent: user | org
+                          permission view = parent->x
+                        } |]
+        `shouldBe` [UnsupportedArrowRelation "parent"]
+    it "reports an arrow target that does not exist" $
+      problems [schema| definition user {}
+                        definition org { relation admin: user
+                                         permission can_admin = admin }
+                        definition doc {
+                          relation org: org
+                          permission view = org->can_admn
+                        } |]
+        `shouldBe` [ArrowTargetMissing "org" "org" "can_admn"]
+    it "reports an arrow target that is a relation" $
+      problems [schema| definition user {}
+                        definition org { relation admin: user }
+                        definition doc {
+                          relation org: org
+                          permission view = org->admin
+                        } |]
+        `shouldBe` [UnsupportedArrowTarget "org" "org" "admin"]
+
 main :: IO ()
 main = hspec $ do
   describe "AccessControl" $ do
    test_Arrow
    test_Expires
+   test_validateSchema
 --   test_addRelationTuple
 --   test_removeRelationTuple
 
