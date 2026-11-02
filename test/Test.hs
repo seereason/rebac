@@ -229,6 +229,61 @@ test_subjectSets =
     it "does not treat the group itself as one of its members" $
       groupCheck [object| page:1 |] view [object| usergroup:x |] `shouldBe` False
 
+-- * Cycles
+
+-- | groups a and b are members of each other, and c is a member of itself
+cycleRels :: [RelationTuple]
+cycleRels =
+  [rels|
+    page:2#viewer@usergroup:a#member
+    page:3#viewer@usergroup:c#member
+    usergroup:a#direct_member@usergroup:b#member
+    usergroup:b#direct_member@usergroup:a#member
+    usergroup:b#direct_member@user:erin
+    usergroup:c#direct_member@usergroup:c#member
+  |]
+
+cycleCheck :: Object NoWildcard -> Permission -> Object NoWildcard -> Bool
+cycleCheck res perm subj = isAllowed (check (mkDefMap (definitions groupSchema)) cycleRels res perm subj Nothing)
+
+-- | folders a and b are each other's parent
+folderSchema :: Schema
+folderSchema =
+  [schema|
+    definition user {}
+
+    definition folder {
+      relation parent: folder
+      relation owner: user
+      permission view = owner + parent->view
+    }
+  |]
+
+folderRels :: [RelationTuple]
+folderRels =
+  [rels|
+    folder:a#parent@folder:b
+    folder:b#parent@folder:a
+    folder:b#owner@user:erin
+  |]
+
+folderCheck :: Object NoWildcard -> Permission -> Object NoWildcard -> Bool
+folderCheck res perm subj = isAllowed (check (mkDefMap (definitions folderSchema)) folderRels res perm subj Nothing)
+
+test_cycles :: SpecWith ()
+test_cycles =
+  describe "cycles" $ do
+    it "finds a member through groups that are members of each other" $
+      cycleCheck [object| page:2 |] view [object| user:erin |] `shouldBe` True
+    it "terminates for a non-member of groups that are members of each other" $
+      cycleCheck [object| page:2 |] view [object| user:dave |] `shouldBe` False
+    it "terminates for a group that is a member of itself" $
+      cycleCheck [object| page:3 |] view [object| user:erin |] `shouldBe` False
+    it "finds an owner through folders that are each other's parent" $
+      folderCheck [object| folder:a |] view [object| user:erin |] `shouldBe` True
+    it "terminates for a non-owner of folders that are each other's parent" $
+      folderCheck [object| folder:a |] view [object| user:dave |] `shouldBe` False
+
 -- | do all the tuples validate under groupSchema
 groupValid :: [RelationTuple] -> Bool
 groupValid = all (isValid . validate (mkDefMap (definitions groupSchema)))
@@ -367,6 +422,7 @@ main = hspec $ do
    test_validateSchema
    test_subjectSets
    test_validateSubjectRelation
+   test_cycles
 --   test_addRelationTuple
 --   test_removeRelationTuple
 

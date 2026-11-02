@@ -110,7 +110,28 @@ check :: Map Text RelPerm
       -> Object NoWildcard  -- ^ subject
       -> Maybe POSIXTime
       -> Access
-check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject now =
+check = checkOnPath Set.empty
+
+-- | 'check', carrying the @(resource, permission)@ pairs that are being
+-- evaluated further up the recursion for this same subject.
+--
+-- Reaching one of those pairs again means a cycle in the tuples, such as two
+-- groups that are members of each other.  Going round the cycle cannot find
+-- anything the evaluation further up is not already looking for, so that
+-- branch is 'NotAllowed'.  Only the current path is kept, not everything
+-- visited, so the same pair can still be reached by more than one route.
+checkOnPath :: Set (Object NoWildcard, Text)
+            -> Map Text RelPerm
+            -> [ RelationTuple ]
+            -> Object NoWildcard  -- ^ resource
+            -> Permission         -- ^ permission
+            -> Object NoWildcard  -- ^ subject
+            -> Maybe POSIXTime
+            -> Access
+checkOnPath path rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject now
+  | Set.member (resource, perm) path =
+      NotAllowed [ "cycle - " <> perm <> " on " <> (T.pack $ show $ ppObject resource) <> " is already being checked" ]
+  | otherwise =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
   case filter (\(RelationTuple resource' _ _ _ _ _) -> resource == resource') rsTuples of
@@ -127,6 +148,9 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
                Nothing -> NotAllowed [ "permission " <> perm <> " not defined for resource " <> resourceTy ]
                (Just expr) -> checkExpr (filterExpired now relationTuples) expr rm
   where
+    -- the path for anything this evaluation recurses into
+    path' = Set.insert (resource, perm) path
+
     subjectIdMatch :: ObjectId -> WildcardObjectId -> Bool
     subjectIdMatch _ Wildcard = True
     subjectIdMatch (ObjectId a) (Specific (ObjectId b)) = a == b
@@ -144,7 +168,7 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
     checkSubjectSets :: [Text] -> [ RelationTuple ] -> Access
     checkSubjectSets reasons [] = NotAllowed reasons
     checkSubjectSets reasons ((RelationTuple _ _ (Object ot (Specific oi)) (Just (Relation subRelation)) _mTag _mExpiration) : rts) =
-      case check rsDefMap rsTuples (Object ot oi) (Permission subRelation) subject now of
+      case checkOnPath path' rsDefMap rsTuples (Object ot oi) (Permission subRelation) subject now of
         Allowed              -> Allowed
         (NotAllowed reasons') -> checkSubjectSets (reasons ++ reasons') rts
     -- a wildcard subject set, @type:*#rel@, is not valid and grants nothing
@@ -189,7 +213,7 @@ check rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission 
               in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
                  -- fixme: this check could be done in parallel
                  -- fixme: does it makes since to pass extraTuples here? or should they have already been filtered out?
-                 mconcat $ map (\subj -> check rsDefMap rsTuples subj (Permission permOrRel) subject now) subjs
+                 mconcat $ map (\subj -> checkOnPath path' rsDefMap rsTuples subj (Permission permOrRel) subject now) subjs
 
 lookupSubjects :: [ RelationTuple ] -> Object NoWildcard -> Relation -> [ Object AllowWildcard ]
 lookupSubjects tuples res rel =
