@@ -1,0 +1,8 @@
+/* the page plugin's part of the schema */
+definition page {
+  relation admin: user
+  relation viewer: user | usergroup#member | user:*
+
+  permission view = viewer + admin
+  permission edit = admin
+}

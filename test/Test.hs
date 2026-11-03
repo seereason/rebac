@@ -1,14 +1,20 @@
-{-# LANGUAGE DataKinds, DeriveGeneric, GeneralizedNewtypeDeriving, OverloadedStrings, QuasiQuotes #-}
+{-# LANGUAGE DataKinds, DeriveGeneric, GeneralizedNewtypeDeriving, OverloadedStrings, QuasiQuotes, TemplateHaskell #-}
 
 module Main (main) where
 
 import AccessControl.Check
 import AccessControl.Relation
 import AccessControl.Schema
+import AccessControl.SchemaFragment
 import AccessControl.Validate
 import Data.Acid
 import Data.Acid.Memory
+import Data.Either (isRight)
+import Data.List (nub, sort)
 import Data.Text (Text)
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
+import Fixtures (baseFragment)
 import Data.Time.Clock
 import Test.Hspec
 
@@ -550,6 +556,56 @@ test_validateSchema =
                         } |]
         `shouldBe` []
 
+-- * Schema fragments
+
+-- | read and checked when this module is compiled, against 'baseFragment'
+pageFragment :: SchemaFragment
+pageFragment = $(schemaFragmentFile [baseFragment] "test/fixtures/page.schema")
+
+-- | the distinct problems 'checkFragment' found, if it found any
+fragmentProblems :: Either FragmentError SchemaFragment -> [SchemaProblem]
+fragmentProblems (Left (FragmentInconsistent es)) = sort (nub (map seProblem es))
+fragmentProblems _ = []
+
+isFragmentParseError :: Either FragmentError SchemaFragment -> Bool
+isFragmentParseError (Left (FragmentParseError _)) = True
+isFragmentParseError _ = False
+
+test_fragments :: SpecWith ()
+test_fragments =
+  describe "schema fragments" $ do
+    it "keeps a spliced file's text, comments included" $ do
+      file <- T.readFile "test/fixtures/page.schema"
+      fragmentText pageFragment `shouldBe` file
+    it "parses a spliced file" $
+      map defName (definitions (fragmentSchema pageFragment)) `shouldBe` ["page"]
+    it "records what a fragment depends on" $
+      fragmentDepends pageFragment `shouldBe` [baseFragment]
+    it "accepts a fragment that uses its dependencies' types" $
+      isRight (checkFragment [baseFragment] (fragmentText pageFragment)) `shouldBe` True
+    it "reports types a fragment uses without depending on them" $
+      fragmentProblems (checkFragment [] (fragmentText pageFragment)) `shouldBe` [UnknownType "user", UnknownType "usergroup"]
+    it "accepts types that come from a dependency's dependency" $
+      isRight (checkFragment [pageFragment] "definition doc { relation reader: usergroup#member }") `shouldBe` True
+    it "reports a definition that a dependency already has" $
+      checkFragment [baseFragment] "definition user {}"
+        `shouldBe` Left (FragmentInconsistent [SchemaError "user" Nothing DuplicateDefinition])
+    it "reports a parse error" $
+      isFragmentParseError (checkFragment [] "definition doc {") `shouldBe` True
+    it "merges fragments into one schema, keeping their comments" $
+      case mergeFragments [baseFragment, pageFragment] of
+        Left errs -> expectationFailure (show errs)
+        Right (txt, sch) -> do
+          map defName (definitions sch) `shouldBe` ["user", "usergroup", "page"]
+          ("/* the page plugin's part of the schema */" `T.isInfixOf` txt) `shouldBe` True
+          parseSchema txt `shouldBe` Right sch
+    it "reports a dependency missing from the merge" $
+      either (sort . nub . map seProblem) (const []) (mergeFragments [pageFragment])
+        `shouldBe` [UnknownType "user", UnknownType "usergroup"]
+    it "reports a fragment merged twice" $
+      either (map seProblem) (const []) (mergeFragments [baseFragment, baseFragment])
+        `shouldBe` [DuplicateDefinition, DuplicateDefinition]
+
 main :: IO ()
 main = hspec $ do
   describe "AccessControl" $ do
@@ -560,6 +616,7 @@ main = hspec $ do
    test_validateSubjectRelation
    test_cycles
    test_names
+   test_fragments
 --   test_addRelationTuple
 --   test_removeRelationTuple
 
