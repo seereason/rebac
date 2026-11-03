@@ -6,6 +6,7 @@ import AccessControl.Check
 import AccessControl.Relation
 import AccessControl.Schema
 import AccessControl.SchemaFragment
+import AccessControl.TupleIndex
 import AccessControl.Validate
 import Data.Acid
 import Data.Acid.Memory
@@ -556,6 +557,32 @@ test_validateSchema =
                         } |]
         `shouldBe` []
 
+-- * Tuple index
+
+-- | every fixture's tuples together
+allFixtureRels :: [RelationTuple]
+allFixtureRels = rels1 ++ rels2 ++ groupRels ++ cycleRels ++ folderRels ++ nameRels
+
+test_tupleIndex :: SpecWith ()
+test_tupleIndex =
+  describe "tuple index" $ do
+    it "finds each resource's tuples, in their original order" $
+      and [ tuplesFor r (fromTuples allFixtureRels) == filter ((== r) . resource) allFixtureRels
+          | r <- nub (map resource allFixtureRels) ]
+        `shouldBe` True
+    it "has nothing for a resource with no tuples" $
+      tuplesFor [object| page:999 |] (fromTuples allFixtureRels) `shouldBe` []
+    it "keeps every tuple" $
+      sort (toTuples (fromTuples allFixtureRels)) `shouldBe` sort allFixtureRels
+    it "adds a tuple after the others for its resource" $
+      let [t] = [rels| page:1#admin@user:zoe |]
+      in tuplesFor [object| page:1 |] (insertTuple t (fromTuples groupRels))
+           `shouldBe` (filter ((== [object| page:1 |]) . resource) groupRels ++ [t])
+    it "removes a tuple, and a resource left with none" $
+      let [t] = [rels| page:1#admin@user:bob |]
+          idx = deleteTuple t (fromTuples [t])
+      in (toTuples idx, indexedResources idx) `shouldBe` ([], [])
+
 -- * Schema fragments
 
 -- | read and checked when this module is compiled, against 'baseFragment'
@@ -617,6 +644,7 @@ main = hspec $ do
    test_cycles
    test_names
    test_fragments
+   test_tupleIndex
 --   test_addRelationTuple
 --   test_removeRelationTuple
 

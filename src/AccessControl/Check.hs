@@ -8,6 +8,7 @@ module AccessControl.Check where
 
 import AccessControl.Relation
 import AccessControl.Schema
+import AccessControl.TupleIndex (TupleIndex, tuplesFor)
 import AccessControl.Validate (RelPerm(..), mkDefMap)
 import Data.Time.Clock.POSIX (POSIXTime)
 import           Data.Map (Map)
@@ -110,7 +111,20 @@ check :: Map Text RelPerm
       -> Object NoWildcard  -- ^ subject
       -> Maybe POSIXTime
       -> Access
-check = checkOnPath Set.empty
+check defMap tuples = checkOnPath Set.empty defMap (\res -> filter ((== res) . resource) tuples)
+
+-- | 'check' with the tuples in a 'TupleIndex', which finds a resource's
+-- tuples without looking at all of them.  Building an index costs several
+-- list scans, so this pays off when the index is kept, for instance
+-- alongside the tuples in the stored state, rather than built per check.
+checkIndexed :: Map Text RelPerm
+             -> TupleIndex
+             -> Object NoWildcard  -- ^ resource
+             -> Permission         -- ^ permission
+             -> Object NoWildcard  -- ^ subject
+             -> Maybe POSIXTime
+             -> Access
+checkIndexed defMap idx = checkOnPath Set.empty defMap (\res -> tuplesFor res idx)
 
 -- | 'check', carrying the @(resource, permission)@ pairs that are being
 -- evaluated further up the recursion for this same subject.
@@ -120,23 +134,25 @@ check = checkOnPath Set.empty
 -- anything the evaluation further up is not already looking for, so that
 -- branch is 'NotAllowed'.  Only the current path is kept, not everything
 -- visited, so the same pair can still be reached by more than one route.
+--
+-- @tuplesOf@ gives the tuples whose resource is the one given; 'check' and
+-- 'checkIndexed' differ only in how they find them.
 checkOnPath :: Set (Object NoWildcard, Text)
             -> Map Text RelPerm
-            -> [ RelationTuple ]
+            -> (Object NoWildcard -> [ RelationTuple ])  -- ^ tuplesOf
             -> Object NoWildcard  -- ^ resource
             -> Permission         -- ^ permission
             -> Object NoWildcard  -- ^ subject
             -> Maybe POSIXTime
             -> Access
-checkOnPath path rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (Permission perm) subject now
+checkOnPath path rsDefMap tuplesOf resource@(Object (ObjectType resourceTy) _) (Permission perm) subject now
   | Set.member (resource, perm) path =
       NotAllowed [ "cycle - " <> perm <> " on " <> (T.pack $ show $ ppObject resource) <> " is already being checked" ]
   | otherwise =
   debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
-  case filter (\(RelationTuple resource' _ _ _ _ _) -> resource == resource') rsTuples of
-    [] -> debugTrace ("## rsTuples = " ++ show (ppRelationTuples rsTuples)) $
-          NotAllowed [ "no tuples for resource located - resource: "  <> (T.pack $ show $ ppObject resource) ]
+  case tuplesOf resource of
+    [] -> NotAllowed [ "no tuples for resource located - resource: "  <> (T.pack $ show $ ppObject resource) ]
     relationTuples ->
       -- find the object definition that is relevant to the 'resourceType'
       case Map.lookup resourceTy rsDefMap of
@@ -170,7 +186,7 @@ checkOnPath path rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (
     checkSubjectSets :: [Text] -> [ RelationTuple ] -> Access
     checkSubjectSets reasons [] = NotAllowed reasons
     checkSubjectSets reasons ((RelationTuple _ _ (Object ot (Specific oi)) (Just (Relation subRelation)) _mTag _mExpiration) : rts) =
-      case checkOnPath path' rsDefMap rsTuples (Object ot oi) (Permission subRelation) subject now of
+      case checkOnPath path' rsDefMap tuplesOf (Object ot oi) (Permission subRelation) subject now of
         Allowed              -> Allowed
         (NotAllowed reasons') -> checkSubjectSets (reasons ++ reasons') rts
     -- a wildcard subject set, @type:*#rel@, is not valid and grants nothing
@@ -186,7 +202,7 @@ checkOnPath path rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (
       case Map.lookup relName rm of
         -- not a relation, so it should be another permission of this
         -- resource; checkOnPath evaluates it, or reports that it is neither
-        Nothing  -> checkOnPath path' rsDefMap rsTuples resource (Permission relName) subject now
+        Nothing  -> checkOnPath path' rsDefMap tuplesOf resource (Permission relName) subject now
         (Just subjectTypes) ->
           debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ (T.unpack relName) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
           -- only the tuples of this relation count; a subject set on some
@@ -217,7 +233,7 @@ checkOnPath path rsDefMap rsTuples resource@(Object (ObjectType resourceTy) _) (
               in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
                  -- fixme: this check could be done in parallel
                  -- fixme: does it makes since to pass extraTuples here? or should they have already been filtered out?
-                 mconcat $ map (\subj -> checkOnPath path' rsDefMap rsTuples subj (Permission permOrRel) subject now) subjs
+                 mconcat $ map (\subj -> checkOnPath path' rsDefMap tuplesOf subj (Permission permOrRel) subject now) subjs
 
 lookupSubjects :: [ RelationTuple ] -> Object NoWildcard -> Relation -> [ Object AllowWildcard ]
 lookupSubjects tuples res rel =

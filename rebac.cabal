@@ -21,6 +21,7 @@ library
                        AccessControl.Relation
                        AccessControl.Schema
                        AccessControl.SchemaFragment
+                       AccessControl.TupleIndex
                        AccessControl.Validate
   -- other-modules:
   -- other-extensions:
