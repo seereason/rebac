@@ -472,6 +472,83 @@ test_validateSchema =
                           permission view = org->admin
                         } |]
         `shouldBe` []
+    -- These follow what SpiceDB v1.52.0 accepts and rejects: a cycle of
+    -- permissions is an error only if nothing in it leads out of it.
+    it "reports permissions defined only in terms of each other" $
+      validateSchema [schema| definition user {}
+                              definition doc {
+                                relation owner: user
+                                permission perm_a = perm_b
+                                permission perm_b = perm_a
+                              } |]
+        `shouldBe` [SchemaError "doc" Nothing (PermissionCycle ["perm_a", "perm_b"])]
+    it "reports a permission defined only in terms of itself" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission perm_a = perm_a
+                        } |]
+        `shouldBe` [PermissionCycle ["perm_a"]]
+    it "reports a cycle alongside other permissions" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission perm_a = perm_b
+                          permission perm_b = perm_a
+                          permission view = owner
+                        } |]
+        `shouldBe` [PermissionCycle ["perm_a", "perm_b"]]
+    it "reports separate cycles in one error" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission perm_a = perm_b
+                          permission perm_b = perm_a
+                          permission perm_c = perm_c
+                        } |]
+        `shouldBe` [PermissionCycle ["perm_a", "perm_b", "perm_c"]]
+    it "reports a permission that only leads into a cycle" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission view = perm_a
+                          permission perm_a = perm_b
+                          permission perm_b = perm_a
+                        } |]
+        `shouldBe` [PermissionCycle ["perm_a", "perm_b", "view"]]
+    it "does not report a permission that uses a cycle and a relation" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission perm_a = perm_b
+                          permission perm_b = perm_a
+                          permission view = perm_a + owner
+                        } |]
+        `shouldBe` [PermissionCycle ["perm_a", "perm_b"]]
+    it "accepts a cycle that also names a relation" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission perm_a = perm_b + owner
+                          permission perm_b = perm_a
+                        } |]
+        `shouldBe` []
+    it "accepts a cycle where the relation is on the other permission" $
+      problems [schema| definition user {}
+                        definition doc {
+                          relation owner: user
+                          permission perm_a = perm_b
+                          permission perm_b = perm_a + owner
+                        } |]
+        `shouldBe` []
+    it "accepts a cycle that leaves through an arrow" $
+      problems [schema| definition user {}
+                        definition folder {
+                          relation parent: folder
+                          permission perm_a = perm_b
+                          permission perm_b = perm_a + parent->perm_a
+                        } |]
+        `shouldBe` []
 
 main :: IO ()
 main = hspec $ do

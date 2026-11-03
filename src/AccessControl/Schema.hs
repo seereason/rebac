@@ -12,10 +12,11 @@ import AccessControl.Relation (Object(..), ObjectWildcard(..), ObjectType(..), R
 import Data.Data (Data)
 import Data.Either (lefts, rights)
 import Data.SafeCopy (SafeCopy)
-import Data.List (find, intersperse, nub)
+import Data.List (find, intercalate, intersperse, nub)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import qualified Data.Map as Map
+import qualified Data.Set as Set
 import Data.Maybe (catMaybes, isJust)
 import Data.Text (Text)
 import qualified Data.Text as T
@@ -503,6 +504,7 @@ data SchemaProblem
   | ArrowFromPermission Text                  -- ^ the left side of an arrow is a permission, it must be a relation
   | ArrowFromWildcard Text                    -- ^ the left side of an arrow is a relation that allows wildcard subjects
   | ArrowTargetMissing Text Text Text         -- ^ @rel->name@ where type @t@, which @rel@ refers to, has no @name@
+  | PermissionCycle [Text]                    -- ^ permissions that only lead into a cycle among themselves, so they can never be granted
   | UnsupportedOperator Text                  -- ^ @&@ or @-@
   | UnsupportedArrowRelation Text             -- ^ an arrow over a relation that is not a single plain type, only the first type would be followed
   deriving (Eq, Ord, Read, Show, Data, Generic)
@@ -522,6 +524,7 @@ ppSchemaError (SchemaError d mMember problem) =
     problemText (ArrowFromPermission n) = "uses " ++ s n ++ "-> but " ++ s n ++ " is a permission, an arrow must start from a relation"
     problemText (ArrowFromWildcard n) = "uses " ++ s n ++ "-> but " ++ s n ++ " allows wildcard subjects"
     problemText (ArrowTargetMissing n t p) = "uses " ++ s n ++ "->" ++ s p ++ ", but " ++ s t ++ " has no " ++ s p
+    problemText (PermissionCycle ps) = "has permissions that only lead into a cycle, never to a relation or an arrow: " ++ intercalate ", " (map s ps)
     problemText (UnsupportedOperator op) = "uses " ++ s op ++ ", which AccessControl.Check does not implement"
     problemText (UnsupportedArrowRelation n) = "uses " ++ s n ++ "->, AccessControl.Check only follows an arrow over a relation with a single plain type"
 
@@ -551,7 +554,39 @@ validateSchema (Schema defs) =
     checkDefinition (Definition dn decls) =
       [ SchemaError dn (Just n) DuplicateMember | n <- duplicates (map declName decls) ] ++
       concat [ map (SchemaError dn (Just (orName r))) (concatMap checkReference (NonEmpty.toList (orObjectTypes r))) | Left r <- decls ] ++
-      concat [ map (SchemaError dn (Just (opName p))) (checkExpression dn (opExpr p)) | Right p <- decls ]
+      concat [ map (SchemaError dn (Just (opName p))) (checkExpression dn (opExpr p)) | Right p <- decls ] ++
+      [ SchemaError dn Nothing (PermissionCycle ps) | let ps = ungroundedPermissions decls, not (null ps) ]
+
+    -- | The permissions that can never be granted because every name they
+    -- use leads only to other such permissions, so they all end up in a
+    -- cycle.  These are the schemas SpiceDB rejects with "there exists a
+    -- cycle in permissions", and like SpiceDB this lists all of them in one
+    -- error, including those that only lead into a cycle.
+    --
+    -- A permission is grounded if its expression names a relation, uses an
+    -- arrow, or names a grounded permission, whatever the operator, as in
+    -- SpiceDB.  A cycle with a grounded member is fine, it is how recursive
+    -- permissions are written.
+    ungroundedPermissions :: [Either ObjectRelation ObjectPermission] -> [Text]
+    ungroundedPermissions decls = Map.keys ungrounded
+      where
+        perms = Map.fromListWith (\_new old -> old) [ (opName p, opExpr p) | Right p <- decls ]
+        relations = Set.fromList [ orName r | Left r <- decls ]
+        -- a relation leads out, and is what 'AccessControl.Check.check' looks
+        -- up first if a permission has the same name (a 'DuplicateMember');
+        -- a name that is neither is reported as 'UnknownName', so let it pass
+        leadsOut grounded n = Set.member n relations || not (Map.member n perms) || Set.member n grounded
+        isGrounded grounded expr =
+          case expr of
+            Union a b        -> isGrounded grounded a || isGrounded grounded b
+            Intersection a b -> isGrounded grounded a || isGrounded grounded b
+            Exclusion a b    -> isGrounded grounded a || isGrounded grounded b
+            Arrow _ _        -> True
+            Rel (Relation n) -> leadsOut grounded n
+        grow grounded =
+          let grounded' = Set.fromList [ p | (p, e) <- Map.toList perms, isGrounded grounded e ]
+          in if grounded' == grounded then grounded else grow grounded'
+        ungrounded = Map.withoutKeys perms (Set.union relations (grow Set.empty))
 
     checkReference :: TypeReference -> [ SchemaProblem ]
     checkReference (TypeReference ty kind _)
