@@ -17,6 +17,9 @@ import qualified Data.Text as T
 import qualified Data.Text.IO as T
 import Fixtures (baseFragment)
 import Data.Time.Clock
+import Data.SafeCopy (SafeCopy(..), base, safeGet, safePut)
+import Data.Serialize (runGet, runPut)
+import GHC.Generics (Generic)
 import Test.Hspec
 
 -- * Example
@@ -563,6 +566,13 @@ test_validateSchema =
 allFixtureRels :: [RelationTuple]
 allFixtureRels = rels1 ++ rels2 ++ groupRels ++ cycleRels ++ folderRels ++ nameRels
 
+-- | records like 'RebacState' with tuples in one field, before and after the
+-- field became a 'TupleIndex', with the generic SafeCopy instances it uses
+data WithList = WithList Int [RelationTuple] deriving (Eq, Show, Generic)
+instance SafeCopy WithList where version = 2 ; kind = base
+data WithIndex = WithIndex Int TupleIndex deriving (Eq, Show, Generic)
+instance SafeCopy WithIndex where version = 2 ; kind = base
+
 test_tupleIndex :: SpecWith ()
 test_tupleIndex =
   describe "tuple index" $ do
@@ -582,6 +592,19 @@ test_tupleIndex =
       let [t] = [rels| page:1#admin@user:bob |]
           idx = deleteTuple t (fromTuples [t])
       in (toTuples idx, indexedResources idx) `shouldBe` ([], [])
+    it "finds a tuple that is there, and not one that is not" $
+      let [t, u] = [rels| page:1#admin@user:bob
+                          page:1#admin@user:zoe |]
+      in (elemTuple t (fromTuples groupRels), elemTuple u (fromTuples groupRels)) `shouldBe` (True, False)
+    it "serializes exactly as the list of its tuples" $
+      let idx = fromTuples allFixtureRels
+      in runPut (safePut idx) `shouldBe` runPut (safePut (toTuples idx))
+    it "serializes as a record field exactly as a list field" $
+      let idx = fromTuples allFixtureRels
+      in runPut (safePut (WithIndex 7 idx)) `shouldBe` runPut (safePut (WithList 7 (toTuples idx)))
+    it "reads a serialized list of tuples back as an index" $
+      runGet safeGet (runPut (safePut (WithList 7 allFixtureRels)))
+        `shouldBe` Right (WithIndex 7 (fromTuples allFixtureRels))
 
 -- * Schema fragments
 
