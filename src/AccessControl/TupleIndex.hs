@@ -18,9 +18,10 @@ module AccessControl.TupleIndex
   , insertTuple
   , deleteTuple
   , indexedResources
+  , resourcesOfType
   ) where
 
-import AccessControl.Relation (Object, ObjectWildcard(..), RelationTuple(..))
+import AccessControl.Relation (Object(..), ObjectType, ObjectWildcard(..), RelationTuple(..))
 import Control.Monad (forM_, replicateM)
 import Data.Map (Map)
 import qualified Data.Map as Map
@@ -82,3 +83,9 @@ deleteTuple rt = TupleIndex . Map.update keep (resource rt) . byResource
 -- | the resources that have at least one tuple
 indexedResources :: TupleIndex -> [Object 'NoWildcard]
 indexedResources = Map.keys . byResource
+
+-- | the resources of this type that have at least one tuple.  Objects are
+-- ordered by type first, so this only looks at the resources of that type.
+resourcesOfType :: ObjectType -> TupleIndex -> [Object 'NoWildcard]
+resourcesOfType ty =
+  Map.keys . Map.takeWhileAntitone ((== ty) . objectType) . Map.dropWhileAntitone ((< ty) . objectType) . byResource

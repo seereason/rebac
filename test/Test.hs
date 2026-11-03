@@ -605,6 +605,42 @@ test_tupleIndex =
     it "reads a serialized list of tuples back as an index" $
       runGet safeGet (runPut (safePut (WithList 7 allFixtureRels)))
         `shouldBe` Right (WithIndex 7 (fromTuples allFixtureRels))
+    it "lists the resources of one type" $
+      resourcesOfType (ObjectType "usergroup") (fromTuples groupRels)
+        `shouldBe` [ [object| usergroup:x |], [object| usergroup:y |] ]
+    it "lists no resources of a type with no tuples" $
+      resourcesOfType (ObjectType "folder") (fromTuples groupRels) `shouldBe` []
+
+-- * Lookup resources
+
+-- | the resources of a type the subject has the permission on
+lookupIn :: Schema -> [RelationTuple] -> T.Text -> Permission -> Object NoWildcard -> [Object NoWildcard]
+lookupIn sch rts ty perm subj = lookupResources (mkDefMap (definitions sch)) (fromTuples rts) (ObjectType ty) perm subj Nothing
+
+test_lookupResources :: SpecWith ()
+test_lookupResources =
+  describe "lookupResources" $ do
+    it "finds a page viewable through a group" $
+      lookupIn groupSchema groupRels "page" view [object| user:alice |] `shouldBe` [ [object| page:1 |] ]
+    it "finds a page viewable through a nested group" $
+      lookupIn groupSchema groupRels "page" view [object| user:carol |] `shouldBe` [ [object| page:1 |] ]
+    it "does not find a page the user can only view when asked for edit" $
+      lookupIn groupSchema groupRels "page" edit [object| user:alice |] `shouldBe` []
+    it "finds a page the user administers" $
+      lookupIn groupSchema groupRels "page" edit [object| user:bob |] `shouldBe` [ [object| page:1 |] ]
+    it "finds every group a user is in, directly or not" $
+      lookupIn groupSchema groupRels "usergroup" (Permission "member") [object| user:carol |]
+        `shouldBe` [ [object| usergroup:x |], [object| usergroup:y |] ]
+    it "finds nothing for a stranger" $
+      lookupIn groupSchema groupRels "page" view [object| user:dave |] `shouldBe` []
+    it "finds both groups of a cycle for a member, and terminates" $
+      lookupIn groupSchema cycleRels "usergroup" (Permission "member") [object| user:erin |]
+        `shouldBe` [ [object| usergroup:a |], [object| usergroup:b |] ]
+    it "finds folders through a parent arrow" $
+      lookupIn folderSchema folderRels "folder" view [object| user:erin |]
+        `shouldBe` [ [object| folder:a |], [object| folder:b |] ]
+    it "finds a resource through an arrow to a relation" $
+      lookupIn nameSchema nameRels "doc" (Permission "manage") [object| user:hannah |] `shouldBe` [ [object| doc:1 |] ]
 
 -- * Schema fragments
 
@@ -668,6 +704,7 @@ main = hspec $ do
    test_names
    test_fragments
    test_tupleIndex
+   test_lookupResources
 --   test_addRelationTuple
 --   test_removeRelationTuple
 

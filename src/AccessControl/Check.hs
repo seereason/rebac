@@ -8,7 +8,7 @@ module AccessControl.Check where
 
 import AccessControl.Relation
 import AccessControl.Schema
-import AccessControl.TupleIndex (TupleIndex, tuplesFor)
+import AccessControl.TupleIndex (TupleIndex, resourcesOfType, tuplesFor)
 import AccessControl.Validate (RelPerm(..), mkDefMap)
 import Data.Time.Clock.POSIX (POSIXTime)
 import           Data.Map (Map)
@@ -125,6 +125,23 @@ checkIndexed :: Map Text RelPerm
              -> Maybe POSIXTime
              -> Access
 checkIndexed defMap idx = checkOnPath Set.empty defMap (\res -> tuplesFor res idx)
+
+-- | The resources of a type on which the subject has a permission (or
+-- relation), in the index's order: SpiceDB's LookupResources, which answers
+-- questions like "which reports can this user view".
+--
+-- This version checks each resource of the type that has tuples.  That is
+-- correct by construction, since 'checkIndexed' never allows anything on a
+-- resource with no tuples, but it costs a check per resource of the type.
+lookupResources :: Map Text RelPerm
+                -> TupleIndex
+                -> ObjectType         -- ^ the type of resource to look for
+                -> Permission         -- ^ permission
+                -> Object NoWildcard  -- ^ subject
+                -> Maybe POSIXTime
+                -> [ Object NoWildcard ]
+lookupResources defMap idx ty perm subject now =
+  [ res | res <- resourcesOfType ty idx, isAllowed (checkIndexed defMap idx res perm subject now) ]
 
 -- | 'check', carrying the @(resource, permission)@ pairs that are being
 -- evaluated further up the recursion for this same subject.
