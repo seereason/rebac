@@ -335,6 +335,50 @@ nameRels =
 nameCheck :: Object NoWildcard -> Permission -> Object NoWildcard -> Bool
 nameCheck res perm subj = isAllowed (check (mkDefMap (definitions nameSchema)) nameRels res perm subj Nothing)
 
+-- | An arrow over a relation with two types follows the subjects of both.
+arrowTypesSchema :: Schema
+arrowTypesSchema =
+  [schema|
+    definition user {}
+
+    definition folder {
+      relation viewer: user
+      permission view = viewer
+    }
+
+    definition team {
+      relation member: user
+      permission view = member
+    }
+
+    definition doc {
+      relation parent: folder | team
+      permission view = parent->view
+    }
+  |]
+
+arrowTypesRels :: [RelationTuple]
+arrowTypesRels =
+  [rels|
+    doc:1#parent@folder:f
+    doc:1#parent@team:t
+    folder:f#viewer@user:fay
+    team:t#member@user:tom
+  |]
+
+test_arrowTypes :: SpecWith ()
+test_arrowTypes =
+  describe "arrows over a relation with more than one type" $ do
+    let can subj = isAllowed (check (mkDefMap (definitions arrowTypesSchema)) arrowTypesRels [object| doc:1 |] view subj Nothing)
+    it "the schema is valid" $
+      problems arrowTypesSchema `shouldBe` []
+    it "follows the first type" $
+      can [object| user:fay |] `shouldBe` True
+    it "follows the second type" $
+      can [object| user:tom |] `shouldBe` True
+    it "grants nothing to someone in neither" $
+      can [object| user:zed |] `shouldBe` False
+
 test_names :: SpecWith ()
 test_names =
   describe "relations and permissions by name" $ do
@@ -455,7 +499,7 @@ test_validateSchema =
                           permission view = reader->x
                         } |]
         `shouldBe` [ArrowFromWildcard "reader"]
-    it "reports an arrow over a relation with more than one type" $
+    it "accepts an arrow over a relation with more than one type" $
       problems [schema| definition user { relation self: user
                                           permission x = self }
                         definition org { relation self: user
@@ -463,6 +507,25 @@ test_validateSchema =
                         definition doc {
                           relation parent: user | org
                           permission view = parent->x
+                        } |]
+        `shouldBe` []
+    it "reports an arrow target missing from one of the relation's types" $
+      problems [schema| definition user {}
+                        definition folder { relation viewer: user
+                                            permission view = viewer }
+                        definition team { relation member: user }
+                        definition doc {
+                          relation parent: folder | team
+                          permission view = parent->view
+                        } |]
+        `shouldBe` [ArrowTargetMissing "parent" "team" "view"]
+    it "reports an arrow over a relation that allows a subject set" $
+      problems [schema| definition user {}
+                        definition team { relation member: user
+                                          permission view = member }
+                        definition doc {
+                          relation parent: team | team#member
+                          permission view = parent->view
                         } |]
         `shouldBe` [UnsupportedArrowRelation "parent"]
     it "reports an arrow target that does not exist" $
@@ -702,6 +765,7 @@ main = hspec $ do
    test_validateSubjectRelation
    test_cycles
    test_names
+   test_arrowTypes
    test_fragments
    test_tupleIndex
    test_lookupResources

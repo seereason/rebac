@@ -506,7 +506,7 @@ data SchemaProblem
   | ArrowTargetMissing Text Text Text         -- ^ @rel->name@ where type @t@, which @rel@ refers to, has no @name@
   | PermissionCycle [Text]                    -- ^ permissions that only lead into a cycle among themselves, so they can never be granted
   | UnsupportedOperator Text                  -- ^ @&@ or @-@
-  | UnsupportedArrowRelation Text             -- ^ an arrow over a relation that is not a single plain type, only the first type would be followed
+  | UnsupportedArrowRelation Text             -- ^ an arrow over a relation that allows a subject set (@type#rel@), which 'AccessControl.Check.check' does not follow
   deriving (Eq, Ord, Read, Show, Data, Generic)
 
 instance SafeCopy SchemaProblem
@@ -526,7 +526,7 @@ ppSchemaError (SchemaError d mMember problem) =
     problemText (ArrowTargetMissing n t p) = "uses " ++ s n ++ "->" ++ s p ++ ", but " ++ s t ++ " has no " ++ s p
     problemText (PermissionCycle ps) = "has permissions that only lead into a cycle, never to a relation or an arrow: " ++ intercalate ", " (map s ps)
     problemText (UnsupportedOperator op) = "uses " ++ s op ++ ", which AccessControl.Check does not implement"
-    problemText (UnsupportedArrowRelation n) = "uses " ++ s n ++ "->, AccessControl.Check only follows an arrow over a relation with a single plain type"
+    problemText (UnsupportedArrowRelation n) = "uses " ++ s n ++ "->, but " ++ s n ++ " allows a subject set, which AccessControl.Check does not follow through an arrow"
 
 -- | check that a schema is consistent with itself
 --
@@ -613,8 +613,9 @@ validateSchema (Schema defs) =
             Just (Right _) -> [ ArrowFromPermission n ]
             Just (Left (ObjectRelation _ refs))
               | any ((== SubjectWildcard) . referenceKind) refs -> [ ArrowFromWildcard n ]
-              | (TypeReference ty Plain _ :| []) <- refs -> checkArrowTarget n ty target
-              | otherwise -> [ UnsupportedArrowRelation n ]
+              | any ((/= Plain) . referenceKind) refs -> [ UnsupportedArrowRelation n ]
+              -- every type the relation allows must have the target
+              | otherwise -> concat [ checkArrowTarget n ty target | ty <- nub (map referenceType (NonEmpty.toList refs)) ]
 
     -- an undefined @ty@ has already been reported as 'UnknownType' on the relation
     checkArrowTarget :: Text -> Text -> Text -> [ SchemaProblem ]

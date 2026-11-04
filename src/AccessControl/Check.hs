@@ -15,7 +15,7 @@ import           Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Data (Data)
 import Data.Either (partitionEithers)
-import Data.List (partition)
+import Data.List (nub, partition)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
 import           Data.Map (Map)
@@ -236,21 +236,21 @@ checkOnPath path rsDefMap tuplesOf resource@(Object (ObjectType resourceTy) _) (
           case checkExpr relationTuples r rm of
             Allowed -> Allowed
             (NotAllowed nar) -> NotAllowed $ (map  (\s -> "Union - left - " <> s) nal) ++ (map (\s -> "Union - right - " <> s) nar)
+    -- @rel->name@: check @name@ on each subject of @rel@, of any of the
+    -- plain types @rel@ allows.  Wildcard and subject set tuples are not
+    -- followed; 'validateSchema' rejects arrows over relations that allow them.
     checkExpr relationTuples (Arrow (Relation arrowRel) permOrRel) rm =
       debugTrace ("\ncheckExpr - Arrow\n") $
       case Map.lookup arrowRel rm of
         Nothing  -> NotAllowed [ "permission  " <> perm <> " refers to a relation " <> arrowRel <> " which can not be found." ]
         (Just subjectTypes) ->
-          debugTrace ("checkExpr Arrow - \nSubjectTypes -> " ++ show ({- NonEmpty.map ppTypeReference -} subjectTypes) ++ "\n" ++ show arrowRel) $
-          case subjectTypes of
-            (st  :| sts) ->
---              let subjs = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ resourceType $ objectResource st)
-              let subjs' = lookupSubjectsWithType relationTuples resource (Relation arrowRel) (ObjectType $ referenceType st)
-                  subjs = mapMaybe toNoWildcard subjs'
-              in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
-                 -- fixme: this check could be done in parallel
-                 -- fixme: does it makes since to pass extraTuples here? or should they have already been filtered out?
-                 mconcat $ map (\subj -> checkOnPath path' rsDefMap tuplesOf subj (Permission permOrRel) subject now) subjs
+          let types = [ ObjectType (referenceType st) | st <- NonEmpty.toList subjectTypes, referenceKind st == Plain ]
+              subjs = nub [ Object ty oi
+                          | RelationTuple _ rel (Object ty (Specific oi)) Nothing _ _ <- relationTuples
+                          , rel == Relation arrowRel
+                          , ty `elem` types ]
+          in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
+             mconcat $ map (\subj -> checkOnPath path' rsDefMap tuplesOf subj (Permission permOrRel) subject now) subjs
 
 lookupSubjects :: [ RelationTuple ] -> Object NoWildcard -> Relation -> [ Object AllowWildcard ]
 lookupSubjects tuples res rel =
