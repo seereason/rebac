@@ -18,6 +18,7 @@ extra-source-files:  CHANGELOG.md rebac.el test/fixtures/*.schema
 library
   exposed-modules:
                        AccessControl.Check
+                       AccessControl.Explain
                        AccessControl.Relation
                        AccessControl.Schema
                        AccessControl.SchemaFragment

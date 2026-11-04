@@ -3,6 +3,7 @@
 module Main (main) where
 
 import AccessControl.Check
+import AccessControl.Explain
 import AccessControl.Relation
 import AccessControl.Schema
 import AccessControl.SchemaFragment
@@ -378,6 +379,53 @@ test_arrowTypes =
       can [object| user:tom |] `shouldBe` True
     it "grants nothing to someone in neither" $
       can [object| user:zed |] `shouldBe` False
+
+-- | Explanations, on the authzed example ('schema1', 'rels1').
+test_explain :: SpecWith ()
+test_explain =
+  describe "explanations" $ do
+    let ex subj = explain defMap1 rels1 somedocument view subj Nothing
+        exAt t subj = explain defMap1 rels1 somedocument view subj (Just t)
+        -- the names of the expression branches of a permission, with whether
+        -- each was evaluated, left to right
+        branches e = case exHow e of
+                       ByPermission x -> go x
+                       _              -> []
+          where go x = case eeHow x of
+                         ExUnion l r    -> go l ++ go r
+                         ExNotEvaluated -> [(eeExpr x, False)]
+                         _              -> [(eeExpr x, True)]
+    it "gives the same verdict as check" $
+      [ exAllowed (ex s) | s <- [sean, jill, hannah, bob, tom] ]
+        `shouldBe` [ isAllowed (check defMap1 rels1 somedocument view s Nothing) | s <- [sean, jill, hannah, bob, tom] ]
+    it "a reader is allowed by the reader tuple" $
+      grantingPaths (ex sean) `shouldBe` [ [rt | rt <- rels1, resource rt == somedocument, relation rt == reader, subject rt == toWildcard sean] ]
+    it "an admin of the document's organization is allowed through the arrow" $
+      grantingPaths (ex hannah)
+        `shouldBe` [ [ head [ rt | rt <- rels1, relation rt == Relation "org" ]
+                     , head [ rt | rt <- rels1, relation rt == Relation "admin" ] ] ]
+    -- view = reader + (owner + org->can_admin): the second branch is left out whole
+    it "deciding stops at the first branch that allows" $
+      map snd (branches (deciding (ex sean))) `shouldBe` [True, False]
+    it "deciding keeps the branches refused before the one that allows" $
+      map snd (branches (deciding (ex hannah))) `shouldBe` [True, True, True]
+    it "a refusal is the same with or without deciding" $
+      deciding (ex bob) `shouldBe` ex bob
+    it "a refusal has no granting paths" $
+      grantingPaths (ex bob) `shouldBe` []
+    it "everyone is allowed on a public document, through the wildcard" $
+      map (map subject) (grantingPaths (explain defMap1 rels1 publicdoc view bob Nothing)) `shouldBe` [[Object (ObjectType "user") Wildcard]]
+    it "an expiring tuple is used before it expires" $
+      exAllowed (exAt (realToFrac (1763418777 :: Int)) tom) `shouldBe` True
+    it "an expired tuple is kept, but not used" $
+      case exHow (exAt (realToFrac (2300000000 :: Int)) tom) of
+        ByPermission x | ExUnion l _ <- eeHow x, ExRelation r <- eeHow l ->
+          (reAllowed r, map subject (reExpired r)) `shouldBe` (False, [toWildcard tom])
+        other -> expectationFailure (show other)
+    it "marks a cycle" $
+      case exHow (explain (mkDefMap (definitions nameSchema)) nameRels [object| doc:1 |] (Permission "a") [object| user:jill |] Nothing) of
+        ByPermission x | ExName b <- eeHow x, ByPermission bx <- exHow b, ExName a <- eeHow bx -> exHow a `shouldBe` Cycle
+        other -> expectationFailure (show other)
 
 test_names :: SpecWith ()
 test_names =
@@ -766,6 +814,7 @@ main = hspec $ do
    test_cycles
    test_names
    test_arrowTypes
+   test_explain
    test_fragments
    test_tupleIndex
    test_lookupResources

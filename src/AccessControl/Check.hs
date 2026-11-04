@@ -9,36 +9,25 @@ module AccessControl.Check where
 import AccessControl.Relation
 import AccessControl.Schema
 import AccessControl.TupleIndex (TupleIndex, resourcesOfType, tuplesFor)
-import AccessControl.Validate (RelPerm(..), mkDefMap)
+import AccessControl.Validate (RelPerm(..))
 import Data.Time.Clock.POSIX (POSIXTime)
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import Data.Data (Data)
-import Data.Either (partitionEithers)
-import Data.List (nub, partition)
 import Data.List.NonEmpty (NonEmpty(..))
 import qualified Data.List.NonEmpty as NonEmpty
-import           Data.Map (Map)
-import Data.Maybe (isNothing, mapMaybe)
+import Data.Maybe (isNothing)
 import Data.SafeCopy (SafeCopy)
 import           Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Typeable (Typeable)
-import Data.Void (Void)
-import Debug.Trace (trace)
 import GHC.Generics
-import Text.PrettyPrint.HughesPJ (Doc, (<+>), ($$), ($+$))
-import qualified Text.PrettyPrint.HughesPJ as PP
-
--- debugTrace = trace
-debugTrace = const id
 
 data Access
   = Allowed
   | NotAllowed [Text]
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
+  deriving (Eq, Ord, Read, Show, Data, Generic)
 
 instance SafeCopy Access
 
@@ -55,15 +44,7 @@ isAllowed Allowed = True
 isAllowed _       = False
 
 filterExpired :: Maybe POSIXTime -> [ RelationTuple ] -> [ RelationTuple ]
-filterExpired mNow relationTuples = filter notExpired relationTuples
-  where
-    notExpired :: RelationTuple -> Bool
-    notExpired rt = case expiration rt of
-      Nothing -> True
-      (Just expires) ->
-        case mNow of
-          Nothing    -> False
-          (Just now) -> expires > (posixTimeToExpiration now)
+filterExpired mNow = filter (notExpired mNow)
 
 {-
 As an alternative implementation -- could we have a lazy function which expands the permission tree, and then a second function which just searches that tree.
@@ -143,17 +124,9 @@ lookupResources :: Map Text RelPerm
 lookupResources defMap idx ty perm subject now =
   [ res | res <- resourcesOfType ty idx, isAllowed (checkIndexed defMap idx res perm subject now) ]
 
--- | 'check', carrying the @(resource, permission)@ pairs that are being
--- evaluated further up the recursion for this same subject.
---
--- Reaching one of those pairs again means a cycle in the tuples, such as two
--- groups that are members of each other.  Going round the cycle cannot find
--- anything the evaluation further up is not already looking for, so that
--- branch is 'NotAllowed'.  Only the current path is kept, not everything
--- visited, so the same pair can still be reached by more than one route.
---
--- @tuplesOf@ gives the tuples whose resource is the one given; 'check' and
--- 'checkIndexed' differ only in how they find them.
+-- | 'check', carrying the @(resource, name)@ pairs being evaluated further
+-- up the recursion; see 'explainOnPath'.  The answer is the verdict of the
+-- explanation, which is only built as far as the verdict needs.
 checkOnPath :: Set (Object NoWildcard, Text)
             -> Map Text RelPerm
             -> (Object NoWildcard -> [ RelationTuple ])  -- ^ tuplesOf
@@ -162,141 +135,269 @@ checkOnPath :: Set (Object NoWildcard, Text)
             -> Object NoWildcard  -- ^ subject
             -> Maybe POSIXTime
             -> Access
-checkOnPath path rsDefMap tuplesOf resource@(Object (ObjectType resourceTy) _) (Permission perm) subject now
-  | Set.member (resource, perm) path =
-      NotAllowed [ "cycle - " <> perm <> " on " <> (T.pack $ show $ ppObject resource) <> " is already being checked" ]
+checkOnPath path defMap tuplesOf resource perm subject now =
+  toAccess (explainOnPath path defMap tuplesOf resource perm subject now)
+
+-- | 'Allowed', or 'NotAllowed' with the reasons, from the explanation.
+toAccess :: Explanation -> Access
+toAccess e
+  | exAllowed e = Allowed
+  | otherwise   = NotAllowed (reasons e)
+
+-- * Explanations
+
+-- | How a name, a permission or a relation, was evaluated on a resource
+-- for a subject: the tree 'check' walks.
+--
+-- It is built lazily, and 'check' reads only the verdicts ('exAllowed'),
+-- which stop at the first branch that allows, as 'check' always has.  So
+-- what a check does not need is never built.  Forcing the whole tree
+-- evaluates every branch instead: every way the subject is allowed, or
+-- every reason it is not.  "AccessControl.Explain" has views of it.
+data Explanation = Explanation
+  { exResource :: Object NoWildcard
+  , exName     :: Text
+  , exAllowed  :: Bool
+  , exHow      :: How
+  }
+  deriving (Eq, Show, Generic)
+
+instance SafeCopy Explanation
+
+-- | How an 'Explanation' was decided.
+data How
+  = Cycle                         -- ^ this name on this resource is already being evaluated further up, so this branch is not allowed
+  | NoTuples                      -- ^ the resource has no tuples at all
+  | UndefinedType                 -- ^ the resource's type is not defined in the schema
+  | UndefinedName                 -- ^ the name is neither a permission nor a relation of the resource's type
+  | ByPermission ExprExplanation  -- ^ a permission, by its expression
+  | ByRelation RelationExplanation  -- ^ a relation, by its tuples
+  deriving (Eq, Show, Generic)
+
+instance SafeCopy How
+
+-- | How a permission expression, or part of one, was evaluated.
+data ExprExplanation = ExprExplanation
+  { eeExpr    :: PermissionExpression
+  , eeAllowed :: Bool
+  , eeHow     :: ExprHow
+  }
+  deriving (Eq, Show, Generic)
+
+instance SafeCopy ExprExplanation
+
+data ExprHow
+  = ExUnion ExprExplanation ExprExplanation       -- ^ @a + b@
+  | ExRelation RelationExplanation                -- ^ a relation of the same resource
+  | ExName Explanation                            -- ^ another permission of the same resource, or a name that is neither
+  | ExArrow [ (RelationTuple, Explanation) ]      -- ^ @rel->name@: each tuple of @rel@ followed, and @name@ on its subject
+  | ExArrowFromNonRelation                        -- ^ @rel->name@ where @rel@ is not a relation
+  | ExUnsupported                                 -- ^ @&@ or @-@, which 'check' does not implement
+  | ExNotEvaluated                                -- ^ not needed for the answer; only 'AccessControl.Explain.deciding' leaves these
+  deriving (Eq, Show, Generic)
+
+instance SafeCopy ExprHow
+
+-- | How a relation was evaluated: the subject has it if a tuple names it,
+-- directly or by wildcard, or if it has the subject relation of a subject
+-- set tuple.
+data RelationExplanation = RelationExplanation
+  { reRelation    :: Relation
+  , reAllowed     :: Bool
+  , reMatches     :: [ RelationTuple ]                  -- ^ tuples that name the subject, directly or by wildcard
+  , reSubjectSets :: [ (RelationTuple, Explanation) ]   -- ^ subject set tuples, each with its subject relation evaluated on its object
+  , reOthers      :: [ RelationTuple ]                  -- ^ tuples that name someone else
+  , reExpired     :: [ RelationTuple ]                  -- ^ tuples ignored because they have expired
+  }
+  deriving (Eq, Show, Generic)
+
+instance SafeCopy RelationExplanation
+
+-- | Explain whether the subject has the permission (or relation) on the
+-- resource; see 'Explanation'.
+explain :: Map Text RelPerm
+        -> [ RelationTuple ]
+        -> Object NoWildcard  -- ^ resource
+        -> Permission         -- ^ permission or relation
+        -> Object NoWildcard  -- ^ subject
+        -> Maybe POSIXTime
+        -> Explanation
+explain defMap tuples = explainOnPath Set.empty defMap (\res -> filter ((== res) . resource) tuples)
+
+-- | 'explain' with the tuples in a 'TupleIndex'.
+explainIndexed :: Map Text RelPerm
+               -> TupleIndex
+               -> Object NoWildcard  -- ^ resource
+               -> Permission         -- ^ permission or relation
+               -> Object NoWildcard  -- ^ subject
+               -> Maybe POSIXTime
+               -> Explanation
+explainIndexed defMap idx = explainOnPath Set.empty defMap (\res -> tuplesFor res idx)
+
+-- | 'explain', carrying the @(resource, name)@ pairs that are being
+-- evaluated further up the recursion for this same subject.
+--
+-- Reaching one of those pairs again means a cycle in the tuples, such as two
+-- groups that are members of each other.  Going round the cycle cannot find
+-- anything the evaluation further up is not already looking for, so that
+-- branch is not allowed ('Cycle').  Only the current path is kept, not
+-- everything visited, so the same pair can still be reached by more than
+-- one route.
+--
+-- @tuplesOf@ gives the tuples whose resource is the one given; 'explain'
+-- and 'explainIndexed' differ only in how they find them.
+explainOnPath :: Set (Object NoWildcard, Text)
+              -> Map Text RelPerm
+              -> (Object NoWildcard -> [ RelationTuple ])  -- ^ tuplesOf
+              -> Object NoWildcard  -- ^ resource
+              -> Permission         -- ^ permission or relation
+              -> Object NoWildcard  -- ^ subject
+              -> Maybe POSIXTime
+              -> Explanation
+explainOnPath path rsDefMap tuplesOf resource@(Object (ObjectType resourceTy) _) (Permission name) subject now
+  | Set.member (resource, name) path = node False Cycle
   | otherwise =
-  debugTrace ("## check - " ++ show (ppObject resource, perm, ppObject subject)) $
   -- find the subset of RelationTuples which are relevant to the requested 'Resource'
   case tuplesOf resource of
-    [] -> NotAllowed [ "no tuples for resource located - resource: "  <> (T.pack $ show $ ppObject resource) ]
+    [] -> node False NoTuples
     relationTuples ->
       -- find the object definition that is relevant to the 'resourceType'
       case Map.lookup resourceTy rsDefMap of
-           Nothing -> NotAllowed [ "object not found in definitions - " <> resourceTy ]
+           Nothing -> node False UndefinedType
            (Just (RelPerm rm pm)) ->
+             -- separate filters rather than a partition: 'check' never reads
+             -- the expired tuples, so they are never built
+             let live    = filter (notExpired now) relationTuples
+                 expired = filter (not . notExpired now) relationTuples in
              -- the name may be a permission or a relation, as it may in a
              -- subject set (@type#name@) or at the end of an arrow (@rel->name@)
-             case Map.lookup perm pm of
-               (Just expr) -> checkExpr (filterExpired now relationTuples) expr rm
+             case Map.lookup name pm of
+               (Just expr) -> let e = explainExpr live expired rm expr in node (eeAllowed e) (ByPermission e)
                Nothing
-                 | Map.member perm rm -> checkExpr (filterExpired now relationTuples) (Rel (Relation perm)) rm
-                 | otherwise -> NotAllowed [ "permission or relation " <> perm <> " not defined for resource " <> resourceTy ]
+                 | Map.member name rm -> let r = explainRelation live expired (Relation name) in node (reAllowed r) (ByRelation r)
+                 | otherwise -> node False UndefinedName
   where
+    node allowed how = Explanation resource name allowed how
+
     -- the path for anything this evaluation recurses into
-    path' = Set.insert (resource, perm) path
+    path' = Set.insert (resource, name) path
 
     subjectIdMatch :: ObjectId -> WildcardObjectId -> Bool
     subjectIdMatch _ Wildcard = True
     subjectIdMatch (ObjectId a) (Specific (ObjectId b)) = a == b
---    subjectIdMatch a b = error $ "subjectIdMatch " ++ show (a,b)
 
     -- | does a tuple with no subject relation name this subject, directly or by wildcard?
-    --
-    -- The caller has already narrowed the tuples to the right resource and relation.
-    isDirectMatch :: Object NoWildcard -> RelationTuple -> Bool
-    isDirectMatch (Object subjectTypeA subjectIdA) (RelationTuple _ _ (Object subjectTypeB subjectIdB) _ _ _) =
-      (subjectTypeA == subjectTypeB) && (subjectIdMatch subjectIdA subjectIdB)
+    isDirectMatch :: RelationTuple -> Bool
+    isDirectMatch (RelationTuple _ _ (Object subjectTypeB subjectIdB) _ _ _) =
+      let Object subjectTypeA subjectIdA = subject
+      in (subjectTypeA == subjectTypeB) && (subjectIdMatch subjectIdA subjectIdB)
 
-    -- | does the subject have the subject relation of any of these subject set tuples,
-    -- e.g. for @page:1#viewer\@usergroup:x#member@, is the subject a member of @usergroup:x@?
-    checkSubjectSets :: [Text] -> [ RelationTuple ] -> Access
-    checkSubjectSets reasons [] = NotAllowed reasons
-    checkSubjectSets reasons ((RelationTuple _ _ (Object ot (Specific oi)) (Just (Relation subRelation)) _mTag _mExpiration) : rts) =
-      case checkOnPath path' rsDefMap tuplesOf (Object ot oi) (Permission subRelation) subject now of
-        Allowed              -> Allowed
-        (NotAllowed reasons') -> checkSubjectSets (reasons ++ reasons') rts
-    -- a wildcard subject set, @type:*#rel@, is not valid and grants nothing
-    checkSubjectSets reasons (_ : rts) = checkSubjectSets reasons rts
+    -- | Only the tuples of this relation count; a subject set on some other
+    -- relation of the resource must not grant this one.  A tuple naming the
+    -- subject decides it; otherwise each subject set in turn, e.g. for
+    -- @page:1#viewer\@usergroup:x#member@, is the subject a member of
+    -- @usergroup:x@?  A wildcard subject set, @type:*#rel@, is not valid
+    -- and grants nothing.
+    explainRelation :: [ RelationTuple ] -> [ RelationTuple ] -> Relation -> RelationExplanation
+    explainRelation live expired wanted =
+      let ofRel = filter ((== wanted) . relation) live
+          direct  = filter (isNothing . subjectRelation) ofRel
+          sets    = filter (not . isNothing . subjectRelation) ofRel
+          matches = filter isDirectMatch direct
+          others  = filter (not . isDirectMatch) direct
+          followed = [ (rt, explainOnPath path' rsDefMap tuplesOf (Object ot oi) (Permission subRelation) subject now)
+                     | rt@(RelationTuple _ _ (Object ot (Specific oi)) (Just (Relation subRelation)) _ _) <- sets ]
+          wildcardSets = [ rt | rt@(RelationTuple _ _ (Object _ Wildcard) (Just _) _ _) <- sets ]
+      in RelationExplanation
+           { reRelation    = wanted
+           , reAllowed     = not (null matches) || any (exAllowed . snd) followed
+           , reMatches     = matches
+           , reSubjectSets = followed
+           , reOthers      = others ++ wildcardSets
+           , reExpired     = filter ((== wanted) . relation) expired
+           }
 
-    checkExpr :: [ RelationTuple ]
-              -> PermissionExpression
-              -> Map Text (NonEmpty TypeReference)
-              -> Access
-    -- handle a simple reference
---    checkExpr relationTuples (Ref tr@(TypeReference (Resource relName Nothing) Nothing)) rm =
-    checkExpr relationTuples (Rel (Relation relName)) rm =
-      case Map.lookup relName rm of
-        -- not a relation, so it should be another permission of this
-        -- resource; checkOnPath evaluates it, or reports that it is neither
-        Nothing  -> checkOnPath path' rsDefMap tuplesOf resource (Permission relName) subject now
-        (Just subjectTypes) ->
-          debugTrace ("\nSubjectTypes -> " ++ show (NonEmpty.map ppTypeReference subjectTypes) ++ "\n\nnSubject ->\n" ++ show (ppObject subject) ++ "\n\nrel -> " ++ (T.unpack relName) ++ "\n\nnRelationTypes ->\n" ++ show (ppRelationTuples relationTuples) ++ "\n\nresource -> " ++ show (ppObject resource)) $
-          -- only the tuples of this relation count; a subject set on some
-          -- other relation of the resource must not grant this one
-          let (direct, subjectSets) = partition (isNothing . subjectRelation) (filter ((== Relation relName) . relation) relationTuples)
-          in if | any (isDirectMatch subject) direct -> Allowed
-                | otherwise -> checkSubjectSets [] subjectSets
+    explainExpr :: [ RelationTuple ]
+                -> [ RelationTuple ]
+                -> Map Text (NonEmpty TypeReference)
+                -> PermissionExpression
+                -> ExprExplanation
+    explainExpr live expired rm expr =
+      case expr of
+        Union l r ->
+          let l' = explainExpr live expired rm l
+              r' = explainExpr live expired rm r
+          in ExprExplanation expr (eeAllowed l' || eeAllowed r') (ExUnion l' r')
+        Rel (Relation n) ->
+          case Map.lookup n rm of
+            -- not a relation, so it should be another permission of this
+            -- resource; explainOnPath evaluates it, or reports that it is neither
+            Nothing -> let e = explainOnPath path' rsDefMap tuplesOf resource (Permission n) subject now
+                       in ExprExplanation expr (exAllowed e) (ExName e)
+            Just _  -> let r = explainRelation live expired (Relation n)
+                       in ExprExplanation expr (reAllowed r) (ExRelation r)
+        -- @rel->name@: check @name@ on each subject of @rel@, of any of the
+        -- plain types @rel@ allows.  Wildcard and subject set tuples are not
+        -- followed; 'validateSchema' rejects arrows over relations that allow them.
+        Arrow (Relation arrowRel) target ->
+          case Map.lookup arrowRel rm of
+            Nothing -> ExprExplanation expr False ExArrowFromNonRelation
+            Just subjectTypes ->
+              let types = [ ObjectType (referenceType st) | st <- NonEmpty.toList subjectTypes, referenceKind st == Plain ]
+                  followed = [ (rt, explainOnPath path' rsDefMap tuplesOf subj (Permission target) subject now)
+                             | (rt, subj) <- nubOn snd [ (rt, Object ty oi)
+                                                       | rt@(RelationTuple _ r (Object ty (Specific oi)) Nothing _ _) <- live
+                                                       , r == Relation arrowRel
+                                                       , ty `elem` types ] ]
+              in ExprExplanation expr (any (exAllowed . snd) followed) (ExArrow followed)
+        -- '&' and '-'; 'validateSchema' rejects them
+        _ -> ExprExplanation expr False ExUnsupported
 
-    checkExpr relationTuples p@(Union l r) rm =
-      debugTrace ("\ncheckExpr - " ++ (show $ ppPermissionExpression p) ++ "\n") $
-      case checkExpr relationTuples l rm of
-        Allowed -> Allowed
-        NotAllowed nal ->
-          case checkExpr relationTuples r rm of
-            Allowed -> Allowed
-            (NotAllowed nar) -> NotAllowed $ (map  (\s -> "Union - left - " <> s) nal) ++ (map (\s -> "Union - right - " <> s) nar)
-    -- @rel->name@: check @name@ on each subject of @rel@, of any of the
-    -- plain types @rel@ allows.  Wildcard and subject set tuples are not
-    -- followed; 'validateSchema' rejects arrows over relations that allow them.
-    checkExpr relationTuples (Arrow (Relation arrowRel) permOrRel) rm =
-      debugTrace ("\ncheckExpr - Arrow\n") $
-      case Map.lookup arrowRel rm of
-        Nothing  -> NotAllowed [ "permission  " <> perm <> " refers to a relation " <> arrowRel <> " which can not be found." ]
-        (Just subjectTypes) ->
-          let types = [ ObjectType (referenceType st) | st <- NonEmpty.toList subjectTypes, referenceKind st == Plain ]
-              subjs = nub [ Object ty oi
-                          | RelationTuple _ rel (Object ty (Specific oi)) Nothing _ _ <- relationTuples
-                          , rel == Relation arrowRel
-                          , ty `elem` types ]
-          in debugTrace ("subjs - " ++ show subjs ++ " permOrRel - " ++ T.unpack permOrRel  ) $
-             mconcat $ map (\subj -> checkOnPath path' rsDefMap tuplesOf subj (Permission permOrRel) subject now) subjs
+    -- the first of each, in order
+    nubOn f = go []
+      where go _ [] = []
+            go seen (x : xs) | f x `elem` seen = go seen xs
+                             | otherwise       = x : go (f x : seen) xs
 
-lookupSubjects :: [ RelationTuple ] -> Object NoWildcard -> Relation -> [ Object AllowWildcard ]
-lookupSubjects tuples res rel =
-  [ subj | (RelationTuple res' rel' subj mSubRelation _mTag _mExpiration) <- tuples, res == res', rel == rel' ]
+-- | Is the tuple in force at this time?  A tuple with an expiration is not
+-- in force when no time is given.
+notExpired :: Maybe POSIXTime -> RelationTuple -> Bool
+notExpired mNow rt =
+  case expiration rt of
+    Nothing -> True
+    (Just expires) ->
+      case mNow of
+        Nothing    -> False
+        (Just now) -> expires > (posixTimeToExpiration now)
 
-lookupSubjectsWithType :: [RelationTuple] -> Object NoWildcard -> Relation -> ObjectType -> [ Object AllowWildcard ]
-lookupSubjectsWithType tuples res rel objectType =
-  [ subj | (RelationTuple res' rel' subj@(Object objectType' _) mSubRelation _mTag _mExpiration) <- tuples, res == res', rel == rel', objectType == objectType' ]
-
-{-
--- * Permission Tree
-
-data SubjectReference = SubjectReference
-  { subjectObject  :: Object SubjectK
-  , subjectRelation :: Maybe Relation
-  }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
-
-data SubjectOperation
-  = SubjectUnion
-  | SubjectIntersection
-  | SubjectExclusion
-    deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
-
-data AlgebraicSubjectSet = AlgebraicSubjectSet
-  { asOperation      :: SubjectOperation
-  , asPermissionTree :: PermissionTree
-  }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
-
-data PermissionTree = PermissionTree
-  { expandedObject   :: Object k
-  , expandedRelation :: Either Relation Permission
-  , expandedSubject  :: Either (Set SubjectReference) ()
-  }
-  deriving (Eq, Ord, Read, Show, Data, Typeable, Generic)
-
-
--- find the permission tree for all the subjects of a resource
-expandPermissionTree :: RelationState -> Object -> Either Relation Permission -> PermissionTree
-expandPermissionTree rs resource relOrPerm =
-  case relOrPerm of
-    (Left rel) ->
-      PermissionTree { expandedObject   = resource
-                     , expandedRelation = relOrPerm
-                     , expandedSubject  = Left (Set.empty)
-                     }
-
--}
+-- | Why an explanation is not allowed, one line for each way it was tried:
+-- what 'NotAllowed' carries.
+reasons :: Explanation -> [ Text ]
+reasons (Explanation res name _ how) =
+  case how of
+    Cycle            -> [ name <> " on " <> obj res <> " is already being checked (a cycle)" ]
+    NoTuples         -> [ "no tuples for " <> obj res ]
+    UndefinedType    -> [ "type " <> unObjectType (objectType res) <> " is not defined" ]
+    UndefinedName    -> [ name <> " is neither a permission nor a relation of " <> unObjectType (objectType res) ]
+    ByPermission e   -> exprReasons e
+    ByRelation r     -> relationReasons r
+  where
+    exprReasons e
+      | eeAllowed e = []
+      | otherwise =
+          case eeHow e of
+            ExUnion l r            -> exprReasons l ++ exprReasons r
+            ExRelation r           -> relationReasons r
+            ExName e'              -> reasons e'
+            ExArrow []             -> [ "no subject to follow for " <> ppExpr (eeExpr e) <> " on " <> obj res ]
+            ExArrow fs             -> concatMap (reasons . snd) fs
+            ExArrowFromNonRelation -> [ ppExpr (eeExpr e) <> " on " <> obj res <> " does not start from a relation" ]
+            ExUnsupported          -> [ ppExpr (eeExpr e) <> " is not supported" ]
+            ExNotEvaluated         -> []
+    relationReasons r
+      | reAllowed r = []
+      | otherwise =
+          ("no " <> obj res <> "#" <> unRelation (reRelation r) <> " tuple names the subject") :
+          concatMap (reasons . snd) (reSubjectSets r)
+    obj = T.pack . show . ppObject
+    ppExpr = T.pack . show . ppPermissionExpression
